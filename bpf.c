@@ -23,13 +23,44 @@
 BPF_HASH(ingress_count, u32, u32);
 BPF_HASH(egress_count, u32, u32);
 
+/**
+ * Ingressの処理ではSurplusエリアの、Optionを外す
+ * @param skb
+ * @return TC_ACTの値
+ */
 int tc_handle_udp_ingress(struct __sk_buff *skb) {
+    void *data_end;
+    void *data;
+    data_end = (void *) (long) skb->data_end;
+    data = (void *) (long) skb->data;
+    struct ethhdr *eth = data;
+    u64 nh_off = sizeof(*eth);
+
+    if (data + nh_off > data_end) return TC_ACT_OK;// 長さがイーサネットフレーム以下なら終了
+    if (eth->h_proto != htons(ETH_P_IP)) return TC_ACT_OK;  // IPパケットでなかったら終了
+    struct iphdr *ip = data + nh_off;
+    if ((void *) &ip[1] > data_end) return TC_ACT_OK;  // 長さがIPパケット以下なら終了
+
+    u32 protocol = ip->protocol;
+    if (ip->ihl != 0x05) return TC_ACT_OK; // IPオプションがついてたら終了
+    if (ip->protocol != IPPROTO_UDP) return TC_ACT_OK; // UDPでなかったら終了
+
+    u32 value = 0, *vp;
+    vp = ingress_count.lookup_or_init(&protocol, &value);
+    *vp += 1;
     return TC_ACT_OK;
 }
 
+/**
+ * Egressの処理ではSurplusエリアに、Optionをつける
+ * @param skb
+ * @return TC_ACTの値
+ */
 int tc_handle_udp_egress(struct __sk_buff *skb) {
-    void *data_end = (void *) (long) skb->data_end;
-    void *data = (void *) (long) skb->data;
+    void *data_end;
+    void *data;
+    data_end = (void *) (long) skb->data_end;
+    data = (void *) (long) skb->data;
     struct ethhdr *eth = data;
     u64 nh_off = sizeof(*eth);
 
@@ -78,10 +109,10 @@ int tc_handle_udp_egress(struct __sk_buff *skb) {
                     0x77,0x77,0x77,0x77,0x77,0x77,0x77,0x77,0x77,0x77,0x77,0x77,
                     0x77,0x77,0x77,0x77,0x77,0x77,0x77,0x77,0x77,0x77,0x77,0x77};
 
-    bpf_skb_store_bytes(skb, sizeof(struct ethhdr) + old_len, add_buf, 64, 0); // surplusエリアに書き込み
+    bpf_skb_store_bytes(skb, sizeof(struct ethhdr) + old_len, add_buf, 60, 0); // surplusエリアに書き込み
 
     u32 value = 0, *vp;
-    vp = ingress_count.lookup_or_init(&protocol, &value);
+    vp = egress_count.lookup_or_init(&protocol, &value);
     *vp += 1;
 
     return TC_ACT_OK;

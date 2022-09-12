@@ -23,12 +23,16 @@ try:
     ipr.tc("add-filter", "bpf", idx, ":1", fd=fn_in.fd, name=fn_in.name, parent=INGRESS, classid=1,direct_action=True)
 
     ingress_count = b.get_table("ingress_count")
+    egress_count = b.get_table("egress_count")
     while True:
       try:
         ingress_count.clear()
+        egress_count.clear()
         time.sleep(1)
         for k, v in ingress_count.items():
-          print("{} {}: {} pkt/s".format(time.strftime("%H:%M:%S"), k.value, v.value))
+          print("I: {} {}: {} pkt/s".format(time.strftime("%H:%M:%S"), k.value, v.value))
+        for k, v in egress_count.items():
+          print("E: {} {}: {} pkt/s".format(time.strftime("%H:%M:%S"), k.value, v.value))
       except KeyboardInterrupt:
         break
 finally:
