@@ -24,10 +24,14 @@ try:
 
     ingress_count = b.get_table("ingress_count")
     egress_count = b.get_table("egress_count")
+
+    port_table = b.get_table("port_table")
+
     while True:
       try:
         ingress_count.clear()
         egress_count.clear()
+        port_table.clear()
         time.sleep(1)
         for k, v in ingress_count.items():
           print("I: {} {}: {} pkt/s".format(time.strftime("%H:%M:%S"), k.value, v.value))
