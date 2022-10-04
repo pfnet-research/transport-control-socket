@@ -10,9 +10,14 @@
 #include <linux/pkt_cls.h>
 #include <bpf/bpf_helpers.h>
 
-#define IP_CSUM_OFF (ETH_HLEN + offsetof(struct iphdr, check))
+#include "udpbpf.h"
+
+#define IP_CHECK_OFF (ETH_HLEN + offsetof(struct iphdr, check))
 #define IP_LEN_OFF (ETH_HLEN + offsetof(struct iphdr, tot_len))
 
+#define DEBUG
+
+#ifdef DEBUG
 #define printk(fmt)   \
   ({                  \
     char msg[] = fmt; \
@@ -24,13 +29,33 @@
     char msg[] = fmt;     \
     bpf_trace_printk(msg, sizeof(msg), __VA_ARGS__); \
   })
+#else
+#define printk(fmt)
+#define printk2(fmt, ...)
+#endif
 
-struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 1);
-    __type(key, int);
-    __type(value, int);
-} udp_port_data SEC(".maps");
+#define PIN_NONE 0
+#define PIN_OBJECT_NS 1
+#define PIN_GLOBAL_NS 2
+#define PIN_CUSTOM_NS 3
+
+struct bpf_elf_map {
+    __u32 type;
+    __u32 size_key;
+    __u32 size_value;
+    __u32 max_elem;
+    __u32 flags;
+    __u32 id;
+    __u32 pinning;
+};
+
+struct bpf_elf_map SEC("maps") udp_intents = {
+        .type = BPF_MAP_TYPE_HASH,
+        .size_key = sizeof(struct key),
+        .size_value = sizeof(struct value),
+        .max_elem = 0xff,
+        .pinning = PIN_NONE,
+};
 
 /**
  * Ingressの処理ではSurplusエリアの、Optionを外す
@@ -39,19 +64,6 @@ struct {
  */
 SEC("tc-ingress")
 int tc_handle_ingress(struct __sk_buff *skb) {
-    int* entry_data;
-    int kkk = 100;
-    int value = 10303;
-
-    entry_data = bpf_map_lookup_elem(&udp_port_data, &kkk);
-    if(entry_data != NULL) {
-        printk("Ext!");
-    }else{
-        printk("Null!");
-        long res = bpf_map_update_elem(&udp_port_data, &kkk, &value, BPF_ANY);
-        printk2("RES: %ld", res);
-    }
-
     void *data_end;
     void *data;
     data_end = (void *) (long) skb->data_end;
@@ -65,7 +77,6 @@ int tc_handle_ingress(struct __sk_buff *skb) {
     uint64_t iph_off = sizeof(*ip);
     if ((void *) &ip[1] > data_end) return TC_ACT_OK;  // 長さがIPパケット以下なら終了
 
-    uint32_t protocol = ip->protocol;
     if (ip->ihl != 0x05) return TC_ACT_OK; // IPオプションがついてたら終了
     if (ip->protocol != IPPROTO_UDP) return TC_ACT_OK; // UDPでなかったら終了
 
@@ -111,11 +122,29 @@ int tc_handle_egress(struct __sk_buff *skb) {
     if ((void *) &udp[1] > data_end) return TC_ACT_OK;  // 長さがUDPパケット以下なら終了
     printk2("[E] UDP source %d\n", htons(udp->source));
 
-    printk2("[E] Old len %d\n", skb->len);
+    uint16_t udp_src = htons(udp->source);
+
+    struct key search_key = {
+        .local_address = htonl(ip->daddr),
+        .local_port = htons(udp->dest)
+    };
+    void* entry_data;
+    //int value = 10303;
+
+    entry_data = bpf_map_lookup_elem(&udp_intents, &search_key);
+    if(entry_data != NULL) {
+        printk("Ext!");
+    }else{
+        printk("Null!");
+        //long res = bpf_map_update_elem(&udp_intents, &udp_src, &value, BPF_ANY);
+        //printk2("RES: %ld", res);
+    }
+
+    printk2("[E] Old len %d", skb->len);
 
     long res = bpf_skb_change_tail(skb, skb->len + 64, 0); // skbの拡張
     if (res != 0) return TC_ACT_OK; //skbの拡張に失敗したら終了
-    printk2("[E] New len %d\n", skb->len);
+    printk2("[E] New len %d", skb->len);
 
     /**
      * skbを拡張したら初めからチェックを全てやり直す
@@ -129,11 +158,11 @@ int tc_handle_egress(struct __sk_buff *skb) {
     uint16_t old_len = ntohs(ip->tot_len);
     uint16_t new_len = old_len + 64;
 
-    printk2("[E] IP old len = %d\n", old_len);
-    printk2("[E] IP new len = %d\n", new_len);
+    printk2("[E] IP old len = %d", old_len);
+    printk2("[E] IP new len = %d", new_len);
 
     uint16_t new_len_nw = htons(new_len);
-    bpf_l3_csum_replace(skb, IP_CSUM_OFF, htons(old_len), new_len_nw, 2); // IPチェックサムの再計算
+    bpf_l3_csum_replace(skb, IP_CHECK_OFF, htons(old_len), new_len_nw, 2); // IPチェックサムの再計算
 
     data_end = (void *) (long) skb->data_end;
     data = (void *) (long) skb->data;
@@ -152,12 +181,6 @@ int tc_handle_egress(struct __sk_buff *skb) {
                        0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77,
                        0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77};
 
-    uint8_t zeros[100] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-
     bpf_skb_store_bytes(skb, ETH_HLEN + old_len, add_buf, 10, 0); // surplusエリアに書き込み
 
     //u32 hash = bpf_get_hash_recalc(skb);
@@ -166,7 +189,5 @@ int tc_handle_egress(struct __sk_buff *skb) {
 
     return TC_ACT_OK;
 }
-
-
 
 char __license[] SEC("license") = "GPL";

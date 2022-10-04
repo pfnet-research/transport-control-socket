@@ -1,6 +1,6 @@
-TARGET = agent
+TARGET = cmd
 SOURCES = $(wildcard *.cpp)
-OBJECTS	= $(SOURCES:.cpp=.o)
+OBJECTS = $(SOURCES:.cpp=.o)
 
 CXX = clang
 
@@ -9,7 +9,7 @@ all: $(TARGET)
 
 .PHONY: run
 run: $(TARGET)
-	./agent
+	./cmd
 
 .PHONY: clean
 clean:
@@ -19,4 +19,4 @@ clean:
 	$(CXX) -o $@ -c $<
 
 $(TARGET): $(OBJECTS) Makefile
-	$(CXX) -o $(TARGET) $(OBJECTS) -lbpf
+	$(CXX) -o $(TARGET) $(OBJECTS)
