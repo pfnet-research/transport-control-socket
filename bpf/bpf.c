@@ -53,7 +53,7 @@ struct bpf_elf_map SEC("maps") udp_intents = {
         .type = BPF_MAP_TYPE_HASH,
         .size_key = sizeof(struct key),
         .size_value = sizeof(struct value),
-        .max_elem = 0xff,
+        .max_elem = 0xffffff,
         .pinning = PIN_NONE,
 };
 
@@ -125,7 +125,7 @@ int tc_handle_egress(struct __sk_buff *skb) {
     uint16_t udp_src = htons(udp->source);
 
     struct key search_key = {
-        .local_address = htonl(ip->daddr),
+        .local_address = htonl(0), // TODO change
         .local_port = htons(udp->dest)
     };
     void* entry_data;
@@ -133,9 +133,9 @@ int tc_handle_egress(struct __sk_buff *skb) {
 
     entry_data = bpf_map_lookup_elem(&udp_intents, &search_key);
     if(entry_data != NULL) {
-        printk("Ext!");
+        printk("Intents Found!");
     }else{
-        printk("Null!");
+        printk("No intents bound!");
         //long res = bpf_map_update_elem(&udp_intents, &udp_src, &value, BPF_ANY);
         //printk2("RES: %ld", res);
     }

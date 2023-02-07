@@ -1,7 +1,7 @@
 TARGET = bpf.o
 SOURCE = bpf.c
 
-DEVICE = ens224
+DEVICE ?= ens224
 
 CFLAGS = -target bpf -O3 -g
 

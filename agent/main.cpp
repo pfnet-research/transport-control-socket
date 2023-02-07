@@ -1,19 +1,19 @@
 /**
  * Userspace program for PFN UDP research
  */
+#include <arpa/inet.h>
+#include <bpf/bpf.h>
 #include <cerrno>
 #include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <fcntl.h>
-#include <termios.h>
-#include <arpa/inet.h>
-#include <bpf/bpf.h>
 #include <linux/bpf.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/un.h>
+#include <termios.h>
 
 #include "../agent/udpctl.h"
 #include "../bpf/udpbpf.h"
@@ -21,14 +21,11 @@
 #define UNIX_SOCKET_PATH "/tmp/udpctl.sock"
 #define MAX_CONNECTION 10
 
-
 int map_fd;
 
-enum class connection_type{
-    closed, open, registered
-};
+enum class connection_type { closed, open, registered };
 
-struct connection_state{
+struct connection_state {
     int fd;
     connection_type type;
     uint32_t local_address;
@@ -37,66 +34,71 @@ struct connection_state{
 
 connection_state states[MAX_CONNECTION];
 
-void terminate(int code){
-    printf("Terminated (%d)\n", code);
+void terminate(int code) {
+    // printf("Terminated (%d)\n", code);
     unlink(UNIX_SOCKET_PATH);
-    exit(EXIT_FAILURE);
+    exit(code);
 }
 
-int handle_udpctl_packet(connection_state *state, udpctl_header *hdr, ssize_t len){
+int handle_udpctl_packet(connection_state *state, udpctl_header *hdr,
+                         ssize_t len) {
     printf("Handle packet type %d from %d\n", hdr->type, state->fd);
 
     switch (hdr->type) {
-        case udpctl_type::type_open:{
-            if(state->type != connection_type::closed) return 1; // 新規のコネクションでなかったらエラー
-            if(len != sizeof(udpctl_header) + sizeof(udpctl_open)) return 1;
+        case udpctl_type::type_open: {
+            if (state->type != connection_type::closed)
+                return 1; // 新規のコネクションでなかったらエラー
+            if (len != sizeof(udpctl_header) + sizeof(udpctl_open)) return 1;
             udpctl_open *open_msg;
-            open_msg = reinterpret_cast<udpctl_open*>(hdr+1);
-            if(open_msg->version != UDPCTL_VERSION){
+            open_msg = reinterpret_cast<udpctl_open *>(hdr + 1);
+            if (open_msg->version != UDPCTL_VERSION) {
                 printf("Invalid version %d\n", open_msg->version);
                 return 1;
             }
-            if(memcmp(open_msg->magic, UDPCTL_MAGIC, 16) != 0){
+            if (memcmp(open_msg->magic, UDPCTL_MAGIC, 16) != 0) {
                 printf("Invalid magic %d\n", open_msg->version);
                 return 1;
             }
             state->type = connection_type::open;
-            printf("Connection open (%d) version %d\n", state->fd, open_msg->version);
-        }
-            break;
-        case type_register:{
-            if(state->type != connection_type::open) return 1;
-            if(len != sizeof(udpctl_header) + sizeof(udpctl_register)) return 1;
+            printf("Connection open (%d) version %d\n", state->fd,
+                   open_msg->version);
+        } break;
+        case type_register: {
+            if (state->type != connection_type::open) return 1;
+            if (len != sizeof(udpctl_header) + sizeof(udpctl_register))
+                return 1;
             udpctl_register *register_msg;
-            register_msg = reinterpret_cast<udpctl_register*>(hdr+1);
+            register_msg = reinterpret_cast<udpctl_register *>(hdr + 1);
 
             state->local_address = register_msg->local_address;
             state->local_port = register_msg->local_port;
 
             state->type = connection_type::registered;
-            printf("Connection registered (%d) address %s, port %d\n", state->fd, inet_ntoa(in_addr{.s_addr=htonl(register_msg->local_address)}), register_msg->local_port);
-        }
-            break;
+            printf("Connection registered (%d) address %s, port %d\n",
+                   state->fd,
+                   inet_ntoa(
+                       in_addr{.s_addr = htonl(register_msg->local_address)}),
+                   register_msg->local_port);
+        } break;
         case type_keepalive:
-            if(state->type != connection_type::registered) return 1;
+            if (state->type != connection_type::registered) return 1;
             printf("Keepalive (%d)\n", state->fd);
             break;
         case type_request:
-            if(state->type != connection_type::registered) return 1;
+            if (state->type != connection_type::registered) return 1;
 
-            int res = bpf_map_update_elem(map_fd, &, value, BPF_ANY);
+            // int res = bpf_map_update_elem(map_fd, &, value, BPF_ANY);
             break;
     }
-
 
     return 0;
 }
 
-[[noreturn]] void run_agent(){
+[[noreturn]] void run_agent() {
     int fd_accept, max_fd;
 
     fd_accept = socket(AF_UNIX, SOCK_STREAM, 0);
-    if(fd_accept < 0){
+    if (fd_accept < 0) {
         perror("Failed to open socket");
         exit(EXIT_FAILURE);
     }
@@ -112,7 +114,7 @@ int handle_udpctl_packet(connection_state *state, udpctl_header *hdr, ssize_t le
     int res;
 
     res = bind(fd_accept, (struct sockaddr *)&sun, sun_len);
-    if(res < 0){
+    if (res < 0) {
         perror("Failed to bind address");
         shutdown(fd_accept, SHUT_RDWR);
         close(fd_accept);
@@ -121,7 +123,7 @@ int handle_udpctl_packet(connection_state *state, udpctl_header *hdr, ssize_t le
     }
 
     res = listen(fd_accept, MAX_CONNECTION);
-    if(res < 0){
+    if (res < 0) {
         perror("Failed to listen");
         shutdown(fd_accept, SHUT_RDWR);
         close(fd_accept);
@@ -135,7 +137,7 @@ int handle_udpctl_packet(connection_state *state, udpctl_header *hdr, ssize_t le
     FD_SET(fd_accept, &sets);
     FD_SET(STDIN_FILENO, &sets);
 
-    for(int i = 0; i < MAX_CONNECTION; i++){
+    for (int i = 0; i < MAX_CONNECTION; i++) {
         states[i].fd = -1;
         states[i].type = connection_type::closed;
     }
@@ -145,21 +147,25 @@ int handle_udpctl_packet(connection_state *state, udpctl_header *hdr, ssize_t le
     uint8_t buf[2000];
     udpctl_header *hdr_ptr;
 
-    while(true){
+    while (true) {
         memcpy(&sets2, &sets, sizeof(sets));
-        res = select(max_fd+1, &sets2, nullptr, nullptr, nullptr);
-        if(res < 0){
+        res = select(max_fd + 1, &sets2, nullptr, nullptr, nullptr);
+        if (res < 0) {
             perror("Failed to select");
         }
-        if(FD_ISSET(STDIN_FILENO, &sets2)) {
+        if (FD_ISSET(STDIN_FILENO, &sets2)) {
             int input = getchar();
-            if(input == 's'){
+            if (input == 's') {
                 printf("\nShow states\n");
-                for (int i=0;i<MAX_CONNECTION;i++){
+                for (int i = 0; i < MAX_CONNECTION; i++) {
                     printf("fd %d state %d ", states[i].fd, states[i].type);
-                    switch(states[i].type){
+                    switch (states[i].type) {
                         case connection_type::registered:
-                            printf("address %s port %d\n", inet_ntoa(in_addr{.s_addr=htonl(states[i].local_address)}), states[i].local_port);
+                            printf(
+                                "address %s port %d\n",
+                                inet_ntoa(in_addr{
+                                    .s_addr = htonl(states[i].local_address)}),
+                                states[i].local_port);
                             break;
                         default:
                             printf("\n");
@@ -168,8 +174,9 @@ int handle_udpctl_packet(connection_state *state, udpctl_header *hdr, ssize_t le
                 }
             }
         }
-        if(FD_ISSET(fd_accept, &sets2)) { // accept用のディスクリプタが何か受信していたら
-            new_fd = accept(fd_accept, (struct sockaddr *) &sun, &sun_len);
+        if (FD_ISSET(fd_accept,
+                     &sets2)) { // accept用のディスクリプタが何か受信していたら
+            new_fd = accept(fd_accept, (struct sockaddr *)&sun, &sun_len);
             if (new_fd < 0) {
                 perror("Failed to accept");
                 unlink(UNIX_SOCKET_PATH);
@@ -192,30 +199,38 @@ int handle_udpctl_packet(connection_state *state, udpctl_header *hdr, ssize_t le
                 max_fd = new_fd;
             }
         }
-        for (int i=0;i<MAX_CONNECTION;i++){
-            if(states[i].fd == -1) break;
-            if(FD_ISSET(states[i].fd, &sets2)){
+        for (int i = 0; i < MAX_CONNECTION; i++) {
+            if (states[i].fd == -1) break;
+            if (FD_ISSET(states[i].fd, &sets2)) {
                 printf("Receiving\n");
                 len = recv(states[i].fd, buf, sizeof(udpctl_header), 0);
-                if(len < 0) {
+                if (len < 0) {
                     perror("Failed to recv");
                     // TODO: Error
-                }else if(len == 0) {
+                } else if (len == 0) {
                     printf("Connection closed (%d).\n", states[i].fd);
                     FD_CLR(states[i].fd, &sets);
                     close(states[i].fd);
                     states[i].fd = -1;
-                }else{ // 正常に受信できたら
-                    for (;len < sizeof(udpctl_header);){ // ヘッダの長さ分だけ受信する, TODO: 無限ループの可能性
-                        add_len = recv(states[i].fd, &buf[len], sizeof(udpctl_header) - len, 0);
+                } else { // 正常に受信できたら
+                    for (; len <
+                           sizeof(udpctl_header);) { // ヘッダの長さ分だけ受信する,
+                                                     // TODO: 無限ループの可能性
+                        add_len = recv(states[i].fd, &buf[len],
+                                       sizeof(udpctl_header) - len, 0);
                         len += add_len;
                     }
-                    hdr_ptr = reinterpret_cast<udpctl_header*>(buf);
-                    for (;len <  sizeof(udpctl_header) + hdr_ptr->length;){ // メッセージ部も受信する, TODO: 無限ループの可能性
-                        add_len = recv(states[i].fd, &buf[len], sizeof(udpctl_header) + hdr_ptr->length - len, 0);
+                    hdr_ptr = reinterpret_cast<udpctl_header *>(buf);
+                    for (; len <
+                           sizeof(udpctl_header) +
+                               hdr_ptr->length;) { // メッセージ部も受信する,
+                                                   // TODO: 無限ループの可能性
+                        add_len = recv(
+                            states[i].fd, &buf[len],
+                            sizeof(udpctl_header) + hdr_ptr->length - len, 0);
                         len += add_len;
                     }
-                    if(handle_udpctl_packet(&states[i], hdr_ptr, len) != 0){
+                    if (handle_udpctl_packet(&states[i], hdr_ptr, len) != 0) {
                         printf("Connection reset (%d)\n", states[i].fd);
                     }
                 }
@@ -224,17 +239,18 @@ int handle_udpctl_packet(connection_state *state, udpctl_header *hdr, ssize_t le
     }
 }
 
-int main(){
+int main() {
 
     uint32_t next_id = 0, udp_intents_map_fd = 0;
     int res;
-    struct bpf_map_info map_info{};
+    bpf_map_info map_info{};
     uint32_t map_info_len = sizeof(map_info);
 
-    while(true){
+    // bpf_mapを1つずつ調べて目的のものに当たるまで探す
+    while (true) {
         res = bpf_map_get_next_id(next_id, &next_id);
-        if(res < 0){
-            if(errno == ENOENT){
+        if (res < 0) {
+            if (errno == ENOENT) {
                 break;
             }
             perror("Failed to execute bpf_map_get_next_id");
@@ -242,31 +258,42 @@ int main(){
         }
 
         map_fd = bpf_map_get_fd_by_id(next_id);
-        if(map_fd < 0){
+        if (map_fd < 0) {
             perror("Failed to execute bpf_map_get_fd_by_id");
             exit(EXIT_FAILURE);
         }
 
         res = bpf_obj_get_info_by_fd(map_fd, &map_info, &map_info_len);
-        if(res < 0){
+        if (res < 0) {
             perror("Failed to execute bpf_obj_get_info_by_fd");
             exit(EXIT_FAILURE);
         }
 
-        printf("Map found (id: %d, fd: %d, name: %s)\n", next_id, map_fd, map_info.name);
+        printf("bpf_map found (id: %d, fd: %d, name: %s)\n", next_id, map_fd,
+               map_info.name);
 
-        if(strcmp(map_info.name, "udp_intents") == 0) {
+        if (strcmp(map_info.name, "udp_intents") ==
+            0) { // bpf_mapの名前がmatchしたら
             udp_intents_map_fd = map_fd;
         }
     }
 
-    if(udp_intents_map_fd == 0) {
+    // 目的のbpf_mapが見つからなかったら終了
+    if (udp_intents_map_fd == 0) {
         fprintf(stderr, "UDP intents map not found\n");
         exit(EXIT_FAILURE);
-    }else{
-        printf("UDP intents map found! (%d)\n", udp_intents_map_fd);
+    } else {
+        printf("udp_intents map found! (fd: %d)\n", udp_intents_map_fd);
     }
 
+    // Ctrl+Cのハンドラ
+    struct sigaction sig_int_handler;
+    sig_int_handler.sa_handler = terminate;
+    sigemptyset(&sig_int_handler.sa_mask);
+    sig_int_handler.sa_flags = 0;
+    sigaction(SIGINT, &sig_int_handler, NULL);
+
+    // これ、何のためにあるんだっけ
     termios attr{};
     tcgetattr(0, &attr);
     attr.c_lflag &= ~ICANON;
@@ -274,6 +301,22 @@ int main(){
     attr.c_cc[VMIN] = 1;
     tcsetattr(0, TCSANOW, &attr);
     fcntl(0, F_SETFL, O_NONBLOCK);
+
+    // インテントのデフォルト値を設定
+    for (int i = 0x0000; i < 0xffff; i++) {
+        // int *value = (int *)malloc(sizeof(int));
+        // *value = i;
+        struct key intert_key = {.local_address = htonl(0),
+                                 .local_port = htons(i)};
+
+        int res =
+            bpf_map_update_elem(udp_intents_map_fd, &intert_key, &i, BPF_ANY);
+        if (res < 0) {
+            printf("Failed to update %d '%s'\n", i, strerror(errno));
+            printf("%d\n", res);
+            terminate(-1);
+        }
+    }
 
     run_agent();
 
@@ -291,7 +334,7 @@ int main(){
     }
     */
 
-    while(true){
+    while (true) {
         sleep(1);
     }
 
