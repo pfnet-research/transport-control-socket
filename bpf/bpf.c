@@ -133,9 +133,9 @@ int tc_handle_egress(struct __sk_buff *skb) {
 
     entry_data = bpf_map_lookup_elem(&udp_intents, &search_key);
     if(entry_data != NULL) {
-        printk("Intents Found!");
+        printk("[E] Intents Found!");
     }else{
-        printk("No intents bound!");
+        printk("[E] No intents bound!");
         //long res = bpf_map_update_elem(&udp_intents, &udp_src, &value, BPF_ANY);
         //printk2("RES: %ld", res);
     }

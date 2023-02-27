@@ -82,7 +82,7 @@ int handle_udpctl_packet(connection_state *state, udpctl_header *hdr,
         } break;
         case type_keepalive:
             if (state->type != connection_type::registered) return 1;
-            printf("Keepalive (%d)\n", state->fd);
+            printf("Keepalive (fd: %d)\n", state->fd);
             break;
         case type_request:
             if (state->type != connection_type::registered) return 1;
@@ -293,7 +293,6 @@ int main() {
     sig_int_handler.sa_flags = 0;
     sigaction(SIGINT, &sig_int_handler, NULL);
 
-    // これ、何のためにあるんだっけ
     termios attr{};
     tcgetattr(0, &attr);
     attr.c_lflag &= ~ICANON;
