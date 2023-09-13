@@ -31,6 +31,10 @@ struct udpctl_register{
     uint16_t local_port;
 } __attribute__((packed));
 
+struct udpctl_request {
+    uint32_t level;
+} __attribute__((packed));
+
 struct udpctl_header{
     uint8_t type;
     uint8_t length;

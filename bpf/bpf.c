@@ -129,7 +129,6 @@ int tc_handle_egress(struct __sk_buff *skb) {
         .local_port = htons(udp->dest)
     };
     void* entry_data;
-    //int value = 10303;
 
     entry_data = bpf_map_lookup_elem(&udp_intents, &search_key);
     if(entry_data != NULL) {

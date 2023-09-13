@@ -86,8 +86,20 @@ int handle_udpctl_packet(connection_state *state, udpctl_header *hdr,
             break;
         case type_request:
             if (state->type != connection_type::registered) return 1;
+            udpctl_request *request_msg;
+            request_msg = reinterpret_cast<udpctl_request *>(hdr + 1);
 
-            // int res = bpf_map_update_elem(map_fd, &, value, BPF_ANY);
+            printf("Received request (fd: %d)\n", state->fd);
+
+            struct key intert_key = {.local_address = htonl(state->local_address),
+                                     .local_port = htons(state->local_port)};
+
+            int res = bpf_map_update_elem(map_fd, &intert_key, &request_msg->level, BPF_ANY);
+            if (res < 0) {
+                printf("Failed to update intent '%s'\n", strerror(errno));
+                printf("%d\n", res);
+                terminate(-1);
+            }
             break;
     }
 
@@ -174,8 +186,7 @@ int handle_udpctl_packet(connection_state *state, udpctl_header *hdr,
                 }
             }
         }
-        if (FD_ISSET(fd_accept,
-                     &sets2)) { // accept用のディスクリプタが何か受信していたら
+        if (FD_ISSET(fd_accept, &sets2)) { // accept用のディスクリプタが何か受信していたら
             new_fd = accept(fd_accept, (struct sockaddr *)&sun, &sun_len);
             if (new_fd < 0) {
                 perror("Failed to accept");
@@ -302,20 +313,21 @@ int main() {
     fcntl(0, F_SETFL, O_NONBLOCK);
 
     // インテントのデフォルト値を設定
+    /*
     for (int i = 0x0000; i < 0xffff; i++) {
-        // int *value = (int *)malloc(sizeof(int));
-        // *value = i;
-        struct key intert_key = {.local_address = htonl(0),
-                                 .local_port = htons(i)};
+        struct key intert_key = {
+            .local_address = htonl(0),
+            .local_port = htons(i)
+        };
 
-        int res =
-            bpf_map_update_elem(udp_intents_map_fd, &intert_key, &i, BPF_ANY);
+        int res = bpf_map_update_elem(udp_intents_map_fd, &intert_key, &i, BPF_ANY);
         if (res < 0) {
             printf("Failed to update %d '%s'\n", i, strerror(errno));
             printf("%d\n", res);
             terminate(-1);
         }
     }
+    */
 
     run_agent();
 

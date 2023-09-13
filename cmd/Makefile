@@ -7,9 +7,13 @@ CXX = clang
 .PHONY: all
 all: $(TARGET)
 
-.PHONY: run
-run: $(TARGET)
-	./cmd
+.PHONY: run-client
+run-client: $(TARGET)
+	./cmd localhost 10101
+
+.PHONY: run-server
+run-server: $(TARGET)
+	./cmd -l 10101
 
 .PHONY: clean
 clean:
