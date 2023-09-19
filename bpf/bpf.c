@@ -149,7 +149,7 @@ int tc_handle_ingress(struct __sk_buff *skb) {
             bpf_ringbuf_output(&rcvd_opt_exp, &notify_value, sizeof(struct map_rcvd_opt_exp_value), 0);
         }
 
-        ip_tail_offset += opthd->length;
+        aligned_ip_tail_offset += opthd->length;
     }
 
     return TC_ACT_OK;

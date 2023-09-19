@@ -83,6 +83,7 @@ struct msg_no_op {
 
 struct msg_open {
     msg_header hdr;
+    user_sock_t user_sock;
 } __attribute__((packed));
 
 #define TYPE_REGISTER_PID 1 // PIDの登録
@@ -98,7 +99,7 @@ struct msg_ctrl_test_con {
 
 #define TYPE_CTRL_SET_OPTION_TIMESTAMP 20 // 送信するUDPパケットにタイムスタンプを付与するための設定
 
-struct msg_ctrl_set_opt_timestamp {
+struct msg_ctrl_set_opt_time {
     msg_header hdr;
     set_type_t set_type;
     flow_info_t flow;
@@ -115,6 +116,14 @@ struct msg_ctrl_set_opt_exp {
 
 #define TYPE_CTRL_SUBSCRIBE_OPTION_TIMESTAMP 30 // 受け取ったUDPパケットのタイムスタンプをアプリケーションで受け取るための設定
 
+#define TYPE_CTRL_SUBSCRIBE_OPTION_EXPERIMENTAL 31 // 受け取ったUDPパケットのExpオプションをアプリケーションで受け取るための設定
+
+struct msg_ctrl_sbsc_opt_exp {
+    msg_header hdr;
+    user_sock_t user_sock;
+    flow_info_t flow;
+} __attribute__((packed));
+
 // Control types 50-89 for notify
 
 #define TYPE_NOTIFY_TEST_CONNECTION_REPLY 50 // コントロールソケットの接続に対する応答
@@ -125,6 +134,13 @@ struct msg_ctrl_test_con_reply {
 } __attribute__((packed));
 
 #define TYPE_NOTIFY_STATISTICS_JITTER_OPTION_TIMESTAMP 60 // 受け取ったUDPパケットのタイムスタンプの統計をアプリケーションで受け取る通知
+
+#define TYPE_NOTIFY_PER_PACKET_OPTION_EXP 61 // 受け取ったUDPパケットのExpオプションをアプリケーションで受け取る通知
+
+struct msg_notify_per_pkt_opt_exp {
+    msg_header hdr;
+    uint32_t exp_val;
+} __attribute__((packed));
 
 // Control types 90-99 for notify errors
 

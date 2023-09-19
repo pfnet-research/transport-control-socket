@@ -26,7 +26,7 @@ struct map_set_opt_exp_value {
 
 struct map_rcvd_opt_exp_value {
     uint16_t value;
-    address_info_t addr;;
+    address_info_t addr;
 } __attribute__((packed));
 
 /** Structures for UDP Options **/

@@ -176,6 +176,9 @@ int handle_ctrl_message(msg_header *hdr, ssize_t len);
     open_msg_buf->hdr.length = sizeof(msg_open);
     open_msg_buf->hdr.type = TYPE_OPEN;
 
+    open_msg_buf->user_sock.pid = getpid();
+    open_msg_buf->user_sock.sock_fd = udp_sock_fd;
+
     res = send(ctrl_sock_fd, open_msg_buf, sizeof(msg_open), 0);
 
     free(open_msg_buf);
@@ -211,10 +214,10 @@ int handle_ctrl_message(msg_header *hdr, ssize_t len);
     FD_SET(ctrl_sock_fd, &sets);
     FD_SET(STDIN_FILENO, &sets);
 
-    uint8_t input_buffer[INPUT_BUFFER_LEN+1];
+    uint8_t input_buffer[INPUT_BUFFER_LEN + 1];
     uint8_t input_len = 0;
 
-    uint8_t recv_buffer[RECV_BUFFER_LEN+1];
+    uint8_t recv_buffer[RECV_BUFFER_LEN + 1];
 
     while (true) {
 
@@ -307,7 +310,8 @@ int handle_ctrl_message(msg_header *hdr, ssize_t len);
                     }
                 }
             }
-            if(input_len != 0) input_len += size;
+            if (input_len != 0)
+                input_len += size;
         }
     }
 
@@ -327,7 +331,24 @@ int send_ctrl_set_opt_exp() {
     msg_ptr->flow.dst_port = 0;
 
     send(ctrl_sock_fd, msg_ptr, sizeof(msg_ctrl_set_opt_exp), 0);
+    free(msg_ptr);
 
+    return 0;
+}
+
+int send_ctrl_sbsc_opt_exp(int sock_fd) {
+    msg_ctrl_sbsc_opt_exp *msg_ptr = (msg_ctrl_sbsc_opt_exp *)malloc(sizeof(msg_ctrl_sbsc_opt_exp));
+
+    msg_ptr->hdr.length = sizeof(msg_ctrl_sbsc_opt_exp);
+    msg_ptr->hdr.type = TYPE_CTRL_SUBSCRIBE_OPTION_EXPERIMENTAL;
+    msg_ptr->user_sock.pid = getpid();
+    msg_ptr->user_sock.sock_fd = sock_fd;
+    msg_ptr->flow.prefix = 0;
+    msg_ptr->flow.netmask = 0;
+    msg_ptr->flow.dst_port = 0;
+    msg_ptr->flow.src_port = 0;
+
+    send(ctrl_sock_fd, msg_ptr, sizeof(msg_ctrl_sbsc_opt_exp), 0);
     free(msg_ptr);
 
     return 0;
@@ -337,8 +358,15 @@ int handle_ctrl_message(msg_header *hdr, ssize_t len) {
     switch (hdr->type) {
     case TYPE_NOTIFY_TEST_CONNECTION_REPLY:
         send_ctrl_set_opt_exp();
+        send_ctrl_sbsc_opt_exp(udp_sock_fd);
         printf("success to connect agent test\n");
         break;
+    case TYPE_NOTIFY_PER_PACKET_OPTION_EXP: {
+        msg_notify_per_pkt_opt_exp *msg_ptr = (msg_notify_per_pkt_opt_exp *)hdr;
+        printf("received notify opt exp: %d\n", msg_ptr->exp_val);
+
+    } break;
     }
+
     return 0;
 }

@@ -16,7 +16,7 @@ For viewing BPF maps
 - Ubuntu 22.04.3 LTS (Linux 5.15.0-83-generic x86_64)
 
 ## Building
-```sh
+```bash
 make -C agent
 make -C bpf
 make -C cmd
@@ -26,6 +26,6 @@ make -C cmd
 #### UDPオプションをつけたUDPパケットのchecksumが誤って計算される
 
 オフロードを無効化する
-```
+```bash
 sudo ethtool --offload IFNAME rx off tx off
 ```

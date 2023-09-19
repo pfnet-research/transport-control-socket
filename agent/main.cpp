@@ -38,6 +38,7 @@ const char *connection_state_strings[] = {
 struct ctrl_socket_state {
     int fd;
     connection_state type;
+    user_sock_t user_sock;
     uint16_t received_size;
     uint8_t received_buffer[MAX_MESSAGE_SIZE + 1];
 };
@@ -53,12 +54,17 @@ void terminate(int code) {
 int handle_ctrl_message(ctrl_socket_state *state, msg_header *hdr, ssize_t len) {
     printf("handle packet type %d from %d\n", hdr->type, state->fd);
     switch (hdr->type) {
-    case TYPE_OPEN:
+    case TYPE_OPEN: {
+        msg_open *open_ptr = (msg_open *)hdr;
         printf("openmsg!\n");
         state->type = connection_state::ctrl_open;
-        break;
+
+        state->user_sock.pid = open_ptr->user_sock.pid;
+        state->user_sock.sock_fd = open_ptr->user_sock.sock_fd;
+
+    } break;
     case TYPE_CTRL_TEST_CONNECTION: {
-        printf("test connection (fd: %d)", state->fd);
+        printf("test connection (fd: %d)\n", state->fd);
         msg_ctrl_test_con *ctrl_test_con_ptr = (msg_ctrl_test_con *)hdr;
 
         msg_ctrl_test_con_reply *ctrl_test_con_reply_buf = (msg_ctrl_test_con_reply *)malloc(sizeof(msg_ctrl_test_con_reply));
@@ -70,6 +76,7 @@ int handle_ctrl_message(ctrl_socket_state *state, msg_header *hdr, ssize_t len) 
         free(ctrl_test_con_reply_buf);
     } break;
     case TYPE_CTRL_SET_OPTION_EXPERIMENTAL: {
+        printf("set opt exp (fd: %d)\n", state->fd);
         msg_ctrl_set_opt_exp *msg_ctrl_set_opt_exp_ptr = (msg_ctrl_set_opt_exp *)hdr;
 
         int key = 4;
@@ -87,6 +94,10 @@ int handle_ctrl_message(ctrl_socket_state *state, msg_header *hdr, ssize_t len) 
         }
 
         printf("updated exp value (fd: %d)\n", state->fd);
+    } break;
+    case TYPE_CTRL_SUBSCRIBE_OPTION_EXPERIMENTAL: {
+        printf("subscribe opt exp (fd: %d)\n", state->fd);
+
     } break;
     default:
         printf("unimplemented!\n");
@@ -134,7 +145,7 @@ int handle_ctrl_message(ctrl_socket_state *state, msg_header *hdr, ssize_t len) 
 
     chmod(CTRL_SOCKET_PATH, 0777);
 
-    fd_set sets, sets2; // for update, for use
+    fd_set sets, sets2; // For update, for use
     FD_ZERO(&sets);
     FD_ZERO(&sets2);
     FD_SET(fd_accept, &sets);
@@ -170,7 +181,7 @@ int handle_ctrl_message(ctrl_socket_state *state, msg_header *hdr, ssize_t len) 
                         printf(", fd=%d", states[i].fd);
                     }
                     if (states[i].type >= connection_state::ctrl_open) {
-                        printf(", rcvd=%d", states[i].received_size);
+                        printf(", user_sock=pid:%d/fd:%d rcvd=%d", states[i].user_sock.pid, states[i].user_sock.sock_fd, states[i].received_size);
                     }
                     printf("\n");
                 }
@@ -203,7 +214,7 @@ int handle_ctrl_message(ctrl_socket_state *state, msg_header *hdr, ssize_t len) 
             }
         }
 
-        if (FD_ISSET(rb_rcvd_opt_exp_fd, &sets2)) { // If sock for accept receive something
+        if (FD_ISSET(rb_rcvd_opt_exp_fd, &sets2)) {
             ring_buffer__poll(rb_rcvd_opt_exp, 0);
             printf("ctrl message\n");
         }
@@ -261,8 +272,9 @@ int handle_ctrl_message(ctrl_socket_state *state, msg_header *hdr, ssize_t len) 
     }
 }
 
+
 int handle_rcvd_opt_exp(void *ctx, void *data, size_t data_sz) {
-    printf("handle_rcvd_opt_exp!!");
+    printf("handle_rcvd_opt_exp!!\n");
 
     if (data_sz < sizeof(map_rcvd_opt_exp_value)) {
         fprintf(stderr, "error in handle_rcvd_opt_exp\n");
@@ -272,6 +284,15 @@ int handle_rcvd_opt_exp(void *ctx, void *data, size_t data_sz) {
     map_rcvd_opt_exp_value *rcvd_val = (map_rcvd_opt_exp_value *)data;
 
     printf("received exp opt %d from %s:%d\n", rcvd_val->value, inet_ntoa(in_addr{.s_addr = rcvd_val->addr.address}), rcvd_val->addr.port);
+
+    msg_notify_per_pkt_opt_exp *msg = (msg_notify_per_pkt_opt_exp *)malloc(sizeof(msg_notify_per_pkt_opt_exp));
+    msg->hdr.length = sizeof(msg_notify_per_pkt_opt_exp);
+    msg->hdr.type = TYPE_NOTIFY_PER_PACKET_OPTION_EXP;
+    msg->exp_val = rcvd_val->value;
+
+    send(states[0].fd, msg, sizeof(msg_notify_per_pkt_opt_exp), 0);
+
+    free(msg);
 
     return 0;
 }
@@ -340,7 +361,7 @@ int main() {
         printf("map rcvd_opt_exp found! (fd: %d)\n", map_rcvd_opt_exp_fd);
     }
 
-    // 1つでも目的のBPF map[が見つからなかったら終了
+    // 1つでも目的のBPF mapがら見つからなかったら終了
     if (!found_all_maps) {
         exit(EXIT_FAILURE);
     }
