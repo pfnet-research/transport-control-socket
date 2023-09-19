@@ -1,8 +1,10 @@
 /**
  * Userspace program for PFN UDP research
  */
+#include <algorithm>
 #include <arpa/inet.h>
 #include <bpf/bpf.h>
+#include <bpf/libbpf.h>
 #include <cerrno>
 #include <csignal>
 #include <cstdint>
@@ -19,8 +21,11 @@
 #include "../agent/ctrl_sock.h"
 #include "../bpf/ctrl_sock_bpf.h"
 
-int map_intent_fd;
+int map_set_intent_fd;
 int map_set_opt_exp_fd;
+int map_rcvd_opt_exp_fd;
+ring_buffer *rb_rcvd_opt_exp;
+int rb_rcvd_opt_exp_fd;
 
 enum connection_state { closed, sock_open, ctrl_open };
 
@@ -47,7 +52,6 @@ void terminate(int code) {
 
 int handle_ctrl_message(ctrl_socket_state *state, msg_header *hdr, ssize_t len) {
     printf("handle packet type %d from %d\n", hdr->type, state->fd);
-
     switch (hdr->type) {
     case TYPE_OPEN:
         printf("openmsg!\n");
@@ -100,7 +104,6 @@ int handle_ctrl_message(ctrl_socket_state *state, msg_header *hdr, ssize_t len) 
         perror("failed to open socket");
         exit(EXIT_FAILURE);
     }
-    max_fd = fd_accept;
 
     struct sockaddr_un sun = {};
     socklen_t sun_len;
@@ -136,6 +139,9 @@ int handle_ctrl_message(ctrl_socket_state *state, msg_header *hdr, ssize_t len) 
     FD_ZERO(&sets2);
     FD_SET(fd_accept, &sets);
     FD_SET(STDIN_FILENO, &sets);
+    FD_SET(rb_rcvd_opt_exp_fd, &sets);
+
+    max_fd = std::max(fd_accept, rb_rcvd_opt_exp_fd);
 
     for (int i = 0; i < MAX_CONNECTION; i++) { // Initialize state table
         states[i].fd = -1;
@@ -197,6 +203,11 @@ int handle_ctrl_message(ctrl_socket_state *state, msg_header *hdr, ssize_t len) 
             }
         }
 
+        if (FD_ISSET(rb_rcvd_opt_exp_fd, &sets2)) { // If sock for accept receive something
+            ring_buffer__poll(rb_rcvd_opt_exp, 0);
+            printf("ctrl message\n");
+        }
+
         for (int i = 0; i < MAX_CONNECTION; i++) {
             if (states[i].fd == -1)
                 break;
@@ -250,6 +261,21 @@ int handle_ctrl_message(ctrl_socket_state *state, msg_header *hdr, ssize_t len) 
     }
 }
 
+int handle_rcvd_opt_exp(void *ctx, void *data, size_t data_sz) {
+    printf("handle_rcvd_opt_exp!!");
+
+    if (data_sz < sizeof(map_rcvd_opt_exp_value)) {
+        fprintf(stderr, "error in handle_rcvd_opt_exp\n");
+        terminate(EXIT_FAILURE);
+    }
+
+    map_rcvd_opt_exp_value *rcvd_val = (map_rcvd_opt_exp_value *)data;
+
+    printf("received exp opt %d from %s:%d\n", rcvd_val->value, inet_ntoa(in_addr{.s_addr = rcvd_val->addr.address}), rcvd_val->addr.port);
+
+    return 0;
+}
+
 int main() {
 
     uint32_t next_id = 0, map_fd = 0;
@@ -282,33 +308,46 @@ int main() {
 
         printf("bpf_map found (id: %d, fd: %d, name: %s)\n", next_id, map_fd, map_info.name);
 
-        if (strcmp(map_info.name, "map_intent") == 0) { // bpf_mapの名前がmatchしたら
-            map_intent_fd = map_fd;
-        } else if (strcmp(map_info.name, "map_set_opt_exp") == 0) {
+        if (strcmp(map_info.name, "set_intent") == 0) { // bpf_mapの名前がmatchしたら
+            map_set_intent_fd = map_fd;
+        } else if (strcmp(map_info.name, "set_opt_exp") == 0) {
             map_set_opt_exp_fd = map_fd;
+        } else if (strcmp(map_info.name, "rcvd_opt_exp") == 0) {
+            map_rcvd_opt_exp_fd = map_fd;
         }
     }
 
     bool found_all_maps = true;
 
-    if (map_intent_fd == 0) {
-        fprintf(stderr, "map_intent not found\n");
+    if (map_set_intent_fd == 0) {
+        fprintf(stderr, "map set_intent not found\n");
         found_all_maps = false;
     } else {
-        printf("map_intent found! (fd: %d)\n", map_intent_fd);
+        printf("map set_intent found! (fd: %d)\n", map_set_intent_fd);
     }
 
     if (map_set_opt_exp_fd == 0) {
-        fprintf(stderr, "map_set_opt_exp not found\n");
+        fprintf(stderr, "map set_opt_exp not found\n");
         found_all_maps = false;
     } else {
-        printf("map_set_opt_exp found! (fd: %d)\n", map_set_opt_exp_fd);
+        printf("map set_opt_exp found! (fd: %d)\n", map_set_opt_exp_fd);
+    }
+
+    if (map_rcvd_opt_exp_fd == 0) {
+        fprintf(stderr, "map rcvd_opt_exp not found\n");
+        found_all_maps = false;
+    } else {
+        printf("map rcvd_opt_exp found! (fd: %d)\n", map_rcvd_opt_exp_fd);
     }
 
     // 1つでも目的のBPF map[が見つからなかったら終了
     if (!found_all_maps) {
         exit(EXIT_FAILURE);
     }
+
+    // Ring buffer
+    rb_rcvd_opt_exp = ring_buffer__new(map_rcvd_opt_exp_fd, handle_rcvd_opt_exp, NULL, NULL);
+    rb_rcvd_opt_exp_fd = ring_buffer__epoll_fd(rb_rcvd_opt_exp);
 
     // Ctrl+Cのハンドラ
     struct sigaction sig_int_handler;

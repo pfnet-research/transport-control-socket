@@ -8,12 +8,12 @@
 
 /** Structures of BPF maps **/
 
-struct map_intent_key {
+struct map_set_intent_key {
     uint32_t local_address;
     uint16_t local_port;
 } __attribute__((packed));
 
-struct map_intent_value {
+struct map_set_intent_value {
     uint8_t option_len;
     uint8_t option_data[MAX_OPTION_SIZE];
 } __attribute__((packed));
@@ -22,6 +22,11 @@ struct map_set_opt_exp_value {
     uint16_t value;
     set_type_t set_type;
     flow_info_t flow;
+} __attribute__((packed));
+
+struct map_rcvd_opt_exp_value {
+    uint16_t value;
+    address_info_t addr;;
 } __attribute__((packed));
 
 /** Structures for UDP Options **/

@@ -57,8 +57,7 @@ typedef struct {
 // address_info_t: どのアドレスからの通知するかを指定する
 typedef struct {
     uint32_t address;
-    uint16_t src_port;
-    uint16_t dst_port;
+    uint16_t port;
 } address_info_t;
 
 #ifdef __cplusplus

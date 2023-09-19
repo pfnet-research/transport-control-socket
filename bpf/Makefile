@@ -34,8 +34,8 @@ tc-status:
 
 .PHONY: map-status
 map-status:
-	sudo bpftool map dump name map_intent
-	sudo bpftool map dump name map_set_opt_exp
+	sudo bpftool map dump name set_intent
+	sudo bpftool map dump name set_opt_exp
 
 .PHONY: trace
 trace:

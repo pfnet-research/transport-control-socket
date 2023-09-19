@@ -51,7 +51,7 @@ struct bpf_elf_map {
     __u32 pinning;
 };
 
-struct bpf_elf_map SEC("maps") map_intent = {
+struct bpf_elf_map SEC("maps") map_set_intent = {
         .type = BPF_MAP_TYPE_HASH,
         .size_key = sizeof(struct key),
         .size_value = sizeof(struct value),
@@ -63,16 +63,21 @@ struct bpf_elf_map SEC("maps") map_intent = {
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 0xffff);
-    __type(key, struct map_intent_key);
-    __type(value, struct map_intent_value);
-} map_intent SEC(".maps");
+    __type(key, struct map_set_intent_key);
+    __type(value, struct map_set_intent_value);
+} set_intent SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 0xff);
     __type(key, int);
     __type(value, struct map_set_opt_exp_value);
-} map_set_opt_exp SEC(".maps");
+} set_opt_exp SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 256 * 1024);
+} rcvd_opt_exp SEC(".maps");
 
 /**
  * Ingressの処理ではSurplusエリアの、Optionを外す
@@ -83,8 +88,8 @@ SEC("tc-ingress")
 int tc_handle_ingress(struct __sk_buff *skb) {
     void *data_end;
     void *data;
-    data_end = (void *)(long)skb->data_end;
-    data = (void *)(long)skb->data;
+    data_end = (uint8_t *)(long)skb->data_end;
+    data = (uint8_t *)(long)skb->data;
     struct ethhdr *eth = data;
     uint64_t nh_off = sizeof(*eth);
 
@@ -103,16 +108,49 @@ int tc_handle_ingress(struct __sk_buff *skb) {
         return TC_ACT_OK; // UDPでなかったら終了
 
     struct udphdr *udp = data + nh_off + iph_off;
-    if ((void *)&udp[1] > data_end)
+    if ((void *)&udp[1] > data_end) 
         return TC_ACT_OK; // 長さがUDPパケット以下なら終了
-    printk2("[I] skb_len=%d, ip_len=%d, udp_len=%d", skb->len, ntohs(ip->tot_len), ntohs(udp->len));
 
-    if (ntohs(ip->tot_len) - iph_off == ntohs(udp->len)) {
+    printk2("[I] Received skb_len=%d, ip_len=%d, udp_len=%d", skb->len, ntohs(ip->tot_len), ntohs(udp->len));
+
+    uint16_t ip_len = ntohs(ip->tot_len);
+
+    if (ip_len - iph_off == ntohs(udp->len)) {
         printk("[I] No surplus area");
         return TC_ACT_OK;
     }
 
     printk("[I] Has surplus area!");
+
+    uint8_t ip_tail_offset = ETH_HLEN + iph_off + ntohs(udp->len);
+    uint8_t aligned_ip_tail_offset = ((ip_tail_offset + 1) & ~((uint32_t)1));
+    int count = 0;
+    //bpf_ringbuf_reserve(&map_rcvd_opt_exp, sizeof(uint16_t), 0);
+    while (count++ < 10) {
+        struct udp_option_head *opthd = data + aligned_ip_tail_offset;
+        if (&opthd[1] > data_end) {
+            break;
+        }
+        printk2("Len: %d", opthd->length);
+        printk2("Type: %d", opthd->type);
+
+        if (opthd->type == UDP_OPTION_EXP) {
+            struct udp_option_exp *expsp = data + aligned_ip_tail_offset;
+            if (&expsp[1] > data_end) {
+                break;
+            }
+
+            printk("Exp opt received!");
+
+            struct map_rcvd_opt_exp_value notify_value;
+            notify_value.value = expsp->exp_val;
+            notify_value.addr.address = htonl(ip->saddr);
+            notify_value.addr.port = htons(udp->source);
+            bpf_ringbuf_output(&rcvd_opt_exp, &notify_value, sizeof(struct map_rcvd_opt_exp_value), 0);
+        }
+
+        ip_tail_offset += opthd->length;
+    }
 
     return TC_ACT_OK;
 }
@@ -125,7 +163,7 @@ struct callback_ctx_ip {
 
 static int callback_set_exp_opt_entry(struct bpf_map *map, int *key, struct map_set_opt_exp_value *val, struct callback_ctx_ip *param) {
     if ((val->flow.prefix & val->flow.netmask) == (param->ip_address & val->flow.netmask)) { // エントリのネットワークと合致するか
-        if (val->set_type != SET_TYPE_PERMANENT) {                                           // この時点で
+        if (val->set_type != SET_TYPE_PERMANENT) {
             val->set_type--;
             if (val->set_type == 0) {
                 bpf_map_delete_elem(map, key);
@@ -183,11 +221,11 @@ int tc_handle_egress(struct __sk_buff *skb) {
 
     /** Check set intent **/
 
-    struct map_intent_key intent_key = {.local_address = htonl(udp_src), .local_port = htons(udp->dest)};
+    struct map_set_intent_key intent_key = {.local_address = htonl(udp_src), .local_port = htons(udp->dest)};
     void *intent_entry;
     int has_intent = 0;
 
-    intent_entry = bpf_map_lookup_elem(&map_intent, &intent_key);
+    intent_entry = bpf_map_lookup_elem(&set_intent, &intent_key);
     if (intent_entry != NULL) {
         printk("[E] Intent Found!");
         has_intent = 1;
@@ -201,7 +239,7 @@ int tc_handle_egress(struct __sk_buff *skb) {
 
     struct callback_ctx_ip param = {.ip_address = ip->daddr, .port = udp->dest, .ret_value = -1};
 
-    bpf_for_each_map_elem(&map_set_opt_exp, callback_set_exp_opt_entry, &param, 0);
+    bpf_for_each_map_elem(&set_opt_exp, callback_set_exp_opt_entry, &param, 0);
 
     if (param.ret_value != -1) {
         printk("[E] Opt exp found!");
