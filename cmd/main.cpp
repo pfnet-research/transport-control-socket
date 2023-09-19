@@ -65,7 +65,7 @@ int handle_ctrl_message(msg_header *hdr, ssize_t len);
             break;
         default:
             printf("error! \'%c\' \'%c\'\n", opt, optopt);
-            terminate(1);
+            terminate(EXIT_FAILURE);
         }
     }
 
@@ -186,16 +186,16 @@ int handle_ctrl_message(msg_header *hdr, ssize_t len);
     }
 
     // Sending check message to ctrl socket
-    msg_ctrl_test_con *chk_msg_buf;
-    chk_msg_buf = (msg_ctrl_test_con *)malloc(sizeof(msg_ctrl_test_con));
+    msg_ctrl_test_con *test_msg_buf;
+    test_msg_buf = (msg_ctrl_test_con *)malloc(sizeof(msg_ctrl_test_con));
 
-    chk_msg_buf->hdr.length = sizeof(msg_ctrl_test_con);
-    chk_msg_buf->hdr.type = TYPE_CTRL_TEST_CONNECTION;
-    chk_msg_buf->test_num = htonl(0x984321);
+    test_msg_buf->hdr.length = sizeof(msg_ctrl_test_con);
+    test_msg_buf->hdr.type = TYPE_CTRL_TEST_CONNECTION;
+    test_msg_buf->test_num = htonl(0x984321);
 
-    res = send(ctrl_sock_fd, chk_msg_buf, sizeof(msg_ctrl_test_con), 0);
+    res = send(ctrl_sock_fd, test_msg_buf, sizeof(msg_ctrl_test_con), 0);
 
-    free(chk_msg_buf);
+    free(test_msg_buf);
 
     if (res < 0) {
         perror("failed to send check message");
@@ -257,10 +257,10 @@ int handle_ctrl_message(msg_header *hdr, ssize_t len);
 
             if (len < 0) { // Failure
                 perror("failed to recv");
-                terminate(1);
+                terminate(EXIT_FAILURE);
             } else if (len == 0) { // Close connection
                 printf("closed control socket by agent\n");
-                terminate(1);
+                terminate(EXIT_FAILURE);
             } else { // 正常に受信できたら
                 ctrl_sock_rcvd_size += len;
                 // printf("size: %d\n", ctrl_sock_rcvd_size);
@@ -274,7 +274,7 @@ int handle_ctrl_message(msg_header *hdr, ssize_t len);
                                                                         // 次のループでチャレンジ
                     } else {                                            // 大きすぎるとき(バグ以外では発生しない)
                         fprintf(stderr, "received message is too large\n");
-                        terminate(1);
+                        terminate(EXIT_FAILURE);
                     }
                 }
             }
@@ -316,8 +316,8 @@ int send_ctrl_set_opt_exp() {
     msg_ptr->hdr.type = TYPE_CTRL_SET_OPTION_EXPERIMENTAL;
     msg_ptr->set_type = SET_TYPE_COUNT(30000);
     msg_ptr->value = 10000;
-    msg_ptr->flow.prefix = 200;
-    msg_ptr->flow.netmask = 100;
+    msg_ptr->flow.prefix = 0;
+    msg_ptr->flow.netmask = 0;
     msg_ptr->flow.src_port = 0;
     msg_ptr->flow.dst_port = 0;
 

@@ -62,6 +62,8 @@ int handle_ctrl_message(ctrl_socket_state *state, msg_header *hdr, ssize_t len) 
         ctrl_test_con_reply_buf->hdr.type = TYPE_NOTIFY_TEST_CONNECTION_REPLY;
         ctrl_test_con_reply_buf->test_num = ctrl_test_con_ptr->test_num;
         send(state->fd, ctrl_test_con_reply_buf, sizeof(msg_ctrl_test_con_reply), 0);
+
+        free(ctrl_test_con_reply_buf);
     } break;
     case TYPE_CTRL_SET_OPTION_EXPERIMENTAL: {
         msg_ctrl_set_opt_exp *msg_ctrl_set_opt_exp_ptr = (msg_ctrl_set_opt_exp *)hdr;
@@ -77,7 +79,7 @@ int handle_ctrl_message(ctrl_socket_state *state, msg_header *hdr, ssize_t len) 
         if (res < 0) {
             printf("Failed to update intent '%s'\n", strerror(errno));
             printf("%d\n", res);
-            terminate(-1);
+            terminate(EXIT_FAILURE);
         }
 
         printf("updated exp value (fd: %d)\n", state->fd);
@@ -168,8 +170,7 @@ int handle_ctrl_message(ctrl_socket_state *state, msg_header *hdr, ssize_t len) 
                 }
             }
         }
-        if (FD_ISSET(fd_accept,
-                     &sets2)) { // If sock for accept receive something
+        if (FD_ISSET(fd_accept, &sets2)) { // If sock for accept receive something
             new_fd = accept(fd_accept, (struct sockaddr *)&sun, &sun_len);
             if (new_fd < 0) {
                 perror("failed to accept");
@@ -189,6 +190,7 @@ int handle_ctrl_message(ctrl_socket_state *state, msg_header *hdr, ssize_t len) 
                     exit(EXIT_FAILURE); // TODO: Exitしないように
                 }
             }
+
             FD_SET(new_fd, &sets);
             if (new_fd > max_fd) {
                 max_fd = new_fd;
@@ -239,7 +241,7 @@ int handle_ctrl_message(ctrl_socket_state *state, msg_header *hdr, ssize_t len) 
                             // 次のループでチャレンジ
                         } else { // 大きすぎるとき(Agentのバグ以外では発生しない)
                             fprintf(stderr, "received message is too large\n");
-                            terminate(1);
+                            terminate(EXIT_FAILURE);
                         }
                     }
                 }

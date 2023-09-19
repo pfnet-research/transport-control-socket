@@ -117,6 +117,22 @@ int tc_handle_ingress(struct __sk_buff *skb) {
     return TC_ACT_OK;
 }
 
+struct callback_ctx_ip {
+    uint32_t ip_address;
+    uint16_t port;
+    int16_t ret_value;
+};
+
+static int callback_set_exp_opt_entry(struct bpf_map *map, int *key, struct map_set_opt_exp_value *val, struct callback_ctx_ip *param) {
+    if ((val->flow.prefix & val->flow.netmask) == (param->ip_address & val->flow.netmask)) { // エントリのネットワークと合致するか
+        printk2("[E] Match index_set_exp_opt_entry: %d", val->value);
+        param->ret_value = val->value;
+        return 1;
+    }
+    printk("[E] No match index_set_exp_opt_entry");
+    return 0;
+}
+
 /**
  * Egressの処理ではSurplusエリアに、Optionをつける
  * @param skb
@@ -131,6 +147,9 @@ int tc_handle_egress(struct __sk_buff *skb) {
     struct ethhdr *eth = data;
     uint64_t nh_off = sizeof(*eth);
 
+    /**
+     * Verifierを通すためのチェック
+     */
     if (data + nh_off > data_end)
         return TC_ACT_OK; // 長さがイーサネットフレーム以下なら終了
     if (eth->h_proto != htons(ETH_P_IP))
@@ -149,35 +168,67 @@ int tc_handle_egress(struct __sk_buff *skb) {
     struct udphdr *udp = data + nh_off + iph_off;
     if ((void *)&udp[1] > data_end)
         return TC_ACT_OK; // 長さがUDPパケット以下なら終了
-    printk2("[E] UDP source %d\n", htons(udp->source));
+    printk2("[E] UDP source %d", htons(udp->source));
 
     uint16_t udp_src = htons(udp->source);
 
-    struct map_intent_key search_key = {.local_address = htonl(0), // TODO change
-                                             .local_port = htons(udp->dest)};
-    void *entry_data;
+    /** Check set intent **/
 
-    entry_data = bpf_map_lookup_elem(&map_intent, &search_key);
-    if (entry_data != NULL) {
-        printk("[E] Intents Found!");
+    struct map_intent_key intent_key = {.local_address = htonl(udp_src), .local_port = htons(udp->dest)};
+    void *intent_entry;
+    int has_intent = 0;
+
+    intent_entry = bpf_map_lookup_elem(&map_intent, &intent_key);
+    if (intent_entry != NULL) {
+        printk("[E] Intent Found!");
+        has_intent = 1;
     } else {
-        printk("[E] No intents bound!");
-        // long res = bpf_map_update_elem(&map_intent, &udp_src, &value, BPF_ANY);
-        // printk2("RES: %ld", res);
+        printk("[E] No intent found!");
     }
-    
-    
-    
-    
-    entry_data = bpf_map_lookup_elem(&map_set_opt_exp, &search_key);
-    
-    
-    printk2("[E] Old len %d", skb->len);
 
-    long res = bpf_skb_change_tail(skb, skb->len + 64, 0); // skbの拡張
-    if (res != 0)
+    /** Check set option exp **/
+    struct map_set_opt_exp_value *set_exp_opt_entry;
+    int has_set_exp_opt = 0;
+
+    struct callback_ctx_ip param = {.ip_address = ip->daddr, .port = udp->dest, .ret_value = -1};
+
+    bpf_for_each_map_elem(&map_set_opt_exp, callback_set_exp_opt_entry, &param, 0);
+
+    if (param.ret_value != -1) {
+        printk("[E] Opt exp found!");
+        has_set_exp_opt = 1;
+    } else {
+        printk("[E] No opt exp found!");
+    }
+
+    if (!has_intent && !has_set_exp_opt) { // オプションをつけない場合、終了
+        return TC_ACT_OK;
+    }
+
+    /** オプション長の計算 **/
+    int opts_len = 0;
+
+    if (has_intent == 1) {
+        opts_len += sizeof(struct udp_option_intent);
+    }
+
+    if (has_set_exp_opt == 1) {
+        opts_len += sizeof(struct udp_option_exp);
+    }
+
+    printk2("[E] Old skb len %d", skb->len);
+
+    uint16_t old_ip_len = ntohs(ip->tot_len);
+    uint16_t aligned_ip_len = ((old_ip_len + 1) & ~((uint32_t)1)); // 2バイトアライメント
+    uint16_t extended_ip_len = aligned_ip_len + opts_len; // オプション長を追加
+
+    long res = bpf_skb_change_tail(skb, skb->len + (extended_ip_len - old_ip_len), 0); // skbの拡張
+
+    if (res != 0) {
+        printk("[E] Failed to extend skb");
         return TC_ACT_OK; // skbの拡張に失敗したら終了
-    printk2("[E] New len %d", skb->len);
+    }
+    printk2("[E] New skb len %d", skb->len);
 
     /**
      * skbを拡張したら初めからチェックを全てやり直す
@@ -190,14 +241,11 @@ int tc_handle_egress(struct __sk_buff *skb) {
     if ((void *)&ip[1] > data_end)
         return TC_ACT_OK; // 長さがIPパケット以下なら終了
 
-    uint16_t old_len = ntohs(ip->tot_len);
-    uint16_t new_len = old_len + 64;
+    printk2("[E] IP old len = %d", old_ip_len);
+    printk2("[E] IP new len = %d", extended_ip_len);
 
-    printk2("[E] IP old len = %d", old_len);
-    printk2("[E] IP new len = %d", new_len);
-
-    uint16_t new_len_nw = htons(new_len);
-    bpf_l3_csum_replace(skb, IP_CHECK_OFF, htons(old_len), new_len_nw, 2); // IPチェックサムの再計算
+    uint16_t extended_ip_len_nw = htons(extended_ip_len);
+    bpf_l3_csum_replace(skb, IP_CHECK_OFF, htons(old_ip_len), extended_ip_len_nw, 2); // IPチェックサムの再計算
 
     data_end = (void *)(long)skb->data_end;
     data = (void *)(long)skb->data;
@@ -207,17 +255,20 @@ int tc_handle_egress(struct __sk_buff *skb) {
     if ((void *)&ip[1] > data_end)
         return TC_ACT_OK; // 長さがIPパケット以下なら終了
 
-    bpf_skb_store_bytes(skb, IP_LEN_OFF, &new_len_nw, 2, 0); // IP全長を書き換え
+    bpf_skb_store_bytes(skb, IP_LEN_OFF, &extended_ip_len_nw, 2, 0); // IP全長を書き換え
 
-    uint8_t add_buf[100] = {0x01, 0x04, 0x00, 0x00, 0x00, 0x00, 0x01, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77,
-                            0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77,
-                            0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77,
-                            0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77};
+    int current_offset = ETH_HLEN + aligned_ip_len;
 
-    bpf_skb_store_bytes(skb, ETH_HLEN + old_len, add_buf, 10, 0); // surplusエリアに書き込み
+    if (has_set_exp_opt) {
+        struct udp_option_exp exp_opt;
+        exp_opt.type_len.type = UDP_OPTION_EXP;
+        exp_opt.type_len.length = sizeof(struct udp_option_exp);
+        exp_opt.exp_val = param.ret_value;
+        bpf_skb_store_bytes(skb, current_offset, &exp_opt, sizeof(struct udp_option_exp), 0); // surplusエリアに書き込み
+        current_offset += sizeof(struct udp_option_exp);
+        printk("[E] Written option exp");
+    }
 
-
-    // u32 hash = bpf_get_hash_recalc(skb);
 
     return TC_ACT_OK;
 }
