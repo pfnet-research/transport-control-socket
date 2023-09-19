@@ -319,8 +319,8 @@ int send_ctrl_set_opt_exp() {
 
     msg_ptr->hdr.length = sizeof(msg_ctrl_set_opt_exp);
     msg_ptr->hdr.type = TYPE_CTRL_SET_OPTION_EXPERIMENTAL;
-    msg_ptr->set_type = SET_TYPE_COUNT(30000);
-    msg_ptr->value = 10000;
+    msg_ptr->set_type = SET_TYPE_COUNT(5);
+    msg_ptr->value = 10;
     msg_ptr->flow.prefix = 0;
     msg_ptr->flow.netmask = 0;
     msg_ptr->flow.src_port = 0;

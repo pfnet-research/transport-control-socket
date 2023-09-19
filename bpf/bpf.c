@@ -125,6 +125,15 @@ struct callback_ctx_ip {
 
 static int callback_set_exp_opt_entry(struct bpf_map *map, int *key, struct map_set_opt_exp_value *val, struct callback_ctx_ip *param) {
     if ((val->flow.prefix & val->flow.netmask) == (param->ip_address & val->flow.netmask)) { // エントリのネットワークと合致するか
+        if (val->set_type != SET_TYPE_PERMANENT) {                                           // この時点で
+            val->set_type--;
+            if (val->set_type == 0) {
+                bpf_map_delete_elem(map, key);
+                printk("[E] Exp opt longer available");
+                return 1;
+            }
+        }
+
         printk2("[E] Match index_set_exp_opt_entry: %d", val->value);
         param->ret_value = val->value;
         return 1;

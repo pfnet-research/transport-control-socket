@@ -41,9 +41,9 @@ typedef struct {
 
 // set_type_t: どのパケットについてオプションを付与するか指定する
 typedef uint16_t set_type_t;
-#define SET_TYPE_PERMANENT 0                 // 無制限に送られるパケットにオプションを付与する
-#define SET_TYPE_NEXT 1                      // 次に送信するパケットにオプションを付与する
-#define SET_TYPE_COUNT(N) std::min(N, 65534) // 次から送られるN個のパケットにオプションを付与する
+#define SET_TYPE_PERMANENT 0                     // 無制限に送られるパケットにオプションを付与する
+#define SET_TYPE_COUNT(N) std::min(N + 1, 65534) // 次から送られるN個のパケットにオプションを付与する
+#define SET_TYPE_NEXT SET_TYPE_COUNT(1)          // 次に送信するパケットにオプションを付与する
 #define SET_TYPE_RESERVED 65535
 
 // flow_info_t: どのフローに対して設定するかを指定する
