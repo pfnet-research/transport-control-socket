@@ -41,4 +41,10 @@ struct udp_option_exp {
     uint16_t exp_val;
 } __attribute__((packed));
 
+struct udp_option_time {
+    struct udp_option_head type_len;
+    uint32_t tsval;
+    uint32_t tsecr;
+} __attribute__((packed));
+
 #endif // BPF_UDPBPF_H

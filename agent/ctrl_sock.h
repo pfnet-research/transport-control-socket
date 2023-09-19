@@ -13,14 +13,25 @@
 
 /*
  *  UDP Options
-*/
+ */
 
-#define UDP_OPTION_TIMESTAMP 8 // Timestamp option
-#define UDP_OPTION_EXP 127     // Experimental option
+#define UDP_OPTION_EOL 0    // End of Options List
+#define UDP_OPTION_NOP 1    // No operation
+#define UDP_OPTION_APC 2    // Alternate payload checksum
+#define UDP_OPTION_FRAG 3   // Fragmentation
+#define UDP_OPTION_MDS 4    // Maximum datagram size
+#define UDP_OPTION_MRDS 5   // Maximum reassembled datagram size
+#define UDP_OPTION_REQ 6    // Request
+#define UDP_OPTION_RES 7    // Response
+#define UDP_OPTION_TIME 8   // Timestamps
+#define UDP_OPTION_AUTH 9   // RESERVED for Authentication (AUTH)
+#define UDP_OPTION_EXP 127  // RFC 3692-style experiments
+#define UDP_OPTION_UENC 192 // RESERVED for Encryption (UENC)
+#define UDP_OPTION_UEXP 254 // RFC 3692-style experiments
 
 /*
  *  Types for message
-*/
+ */
 
 // user_sock_t: ユーザー空間のソケットを一意に特定する
 typedef struct {
@@ -30,8 +41,8 @@ typedef struct {
 
 // set_type_t: どのパケットについてオプションを付与するか指定する
 typedef uint16_t set_type_t;
-#define SET_TYPE_PERMANENT 0              // 無制限に送られるパケットにオプションを付与する
-#define SET_TYPE_NEXT 1                 // 次に送信するパケットにオプションを付与する
+#define SET_TYPE_PERMANENT 0                 // 無制限に送られるパケットにオプションを付与する
+#define SET_TYPE_NEXT 1                      // 次に送信するパケットにオプションを付与する
 #define SET_TYPE_COUNT(N) std::min(N, 65534) // 次から送られるN個のパケットにオプションを付与する
 #define SET_TYPE_RESERVED 65535
 
@@ -54,7 +65,7 @@ typedef struct {
 
 /*
  *  Control  message types
-*/
+ */
 
 struct msg_header {
     uint8_t length; // Message size including header
@@ -104,7 +115,6 @@ struct msg_ctrl_set_opt_exp {
 } __attribute__((packed));
 
 #define TYPE_CTRL_SUBSCRIBE_OPTION_TIMESTAMP 30 // 受け取ったUDPパケットのタイムスタンプをアプリケーションで受け取るための設定
-
 
 // Control types 50-89 for notify
 

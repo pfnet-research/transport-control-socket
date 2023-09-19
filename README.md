@@ -21,3 +21,11 @@ make -C agent
 make -C bpf
 make -C cmd
 ```
+
+## Problems
+#### UDPオプションをつけたUDPパケットのchecksumが誤って計算される
+
+オフロードを無効化する
+```
+sudo ethtool --offload IFNAME rx off tx off
+```

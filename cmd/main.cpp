@@ -211,10 +211,10 @@ int handle_ctrl_message(msg_header *hdr, ssize_t len);
     FD_SET(ctrl_sock_fd, &sets);
     FD_SET(STDIN_FILENO, &sets);
 
-    uint8_t inputs[INPUT_BUFFER_LEN];
+    uint8_t input_buffer[INPUT_BUFFER_LEN+1];
     uint8_t input_len = 0;
 
-    uint8_t recv_buffer[RECV_BUFFER_LEN];
+    uint8_t recv_buffer[RECV_BUFFER_LEN+1];
 
     while (true) {
 
@@ -281,28 +281,33 @@ int handle_ctrl_message(msg_header *hdr, ssize_t len);
         }
 
         if (FD_ISSET(STDIN_FILENO, &sets2)) { // Received something from stdin
-            int input = getchar();
-
-            if (input_len < (INPUT_BUFFER_LEN - 1))
-                inputs[input_len++] = input;
-            if (input == '\n') {
-                if (is_server && remote_address.sin_addr.s_addr == 0) {
-                    printf("connection is not ready\n");
-                } else {
-                    struct sockaddr_in send_addr;
-                    send_addr.sin_family = AF_INET;
-                    send_addr.sin_port = remote_address.sin_port;
-                    send_addr.sin_addr.s_addr = remote_address.sin_addr.s_addr;
-
-                    int send_res = sendto(udp_sock_fd, inputs, input_len, 0, (struct sockaddr *)&send_addr,
-                                          sizeof(send_addr)); // 入力を送信!
-                    if (send_res < 0) {
-                        perror("failed to send");
+            if (INPUT_BUFFER_LEN - input_len <= 0) {
+                fprintf(stderr, "no input buffer\n");
+                terminate(EXIT_FAILURE);
+            }
+            int size = read(STDIN_FILENO, &input_buffer[input_len], INPUT_BUFFER_LEN - input_len);
+            for (int i = input_len; i < input_len + size; i++) {
+                int input = input_buffer[i];
+                if (input == '\n') { // TODO: 改行がバッファの途中にあったときに問題が起こるかも
+                    if (is_server && remote_address.sin_addr.s_addr == 0) {
+                        printf("connection is not ready\n");
                     } else {
-                        input_len = 0;
+                        struct sockaddr_in send_addr;
+                        send_addr.sin_family = AF_INET;
+                        send_addr.sin_port = remote_address.sin_port;
+                        send_addr.sin_addr.s_addr = remote_address.sin_addr.s_addr;
+
+                        int send_res = sendto(udp_sock_fd, input_buffer, input_len + size, 0, (struct sockaddr *)&send_addr,
+                                              sizeof(send_addr)); // 入力を送信!
+                        if (send_res < 0) {
+                            perror("failed to send");
+                        } else {
+                            input_len = 0;
+                        }
                     }
                 }
             }
+            if(input_len != 0) input_len += size;
         }
     }
 
