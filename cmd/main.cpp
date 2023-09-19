@@ -1,4 +1,3 @@
-#include "../agent/udpctl.h"
 #include <algorithm>
 #include <arpa/inet.h>
 #include <cmath>
@@ -10,10 +9,13 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include "../agent/ctrl_sock.h"
+
+/* Sample netcat application*/
+
 #define UDP_SOCKET_ADDREESS INADDR_ANY
 #define UDP_SOCKET_PORT 10080
 
-#define UNIX_SOCKET_PATH "/tmp/udpctl.sock"
 #define IP_ADDRESS(A, B, C, D) (A * 0x1000000u + B * 0x10000 + C * 0x100 + D)
 
 #define INPUT_BUFFER_LEN 256
@@ -26,44 +28,50 @@ bool is_server = false;
 short source_port = 0;
 short ctl_level = 2;
 
-int udp_sock_fd = -1;
-int	un_fd = -1;
+int udp_sock_fd = -1;  // fd for udp socket
+int ctrl_sock_fd = -1; // fd for control socket
 
-void terminate(int code){
-    printf("Terminated (%d)\n", code);
-    if(un_fd >= 0){
-        shutdown(un_fd, SHUT_RDWR);
-        close(un_fd);
+// Buffer for control socket
+uint8_t ctrl_sock_buffer[MAX_MESSAGE_SIZE + 1];
+uint16_t ctrl_sock_rcvd_size = 0;
+
+void terminate(int code) {
+    printf("terminated (%d)\n", code);
+    if (ctrl_sock_fd >= 0) {
+        shutdown(ctrl_sock_fd, SHUT_RDWR);
+        close(ctrl_sock_fd);
     }
     exit(code);
 }
 
-[[noreturn]] int main(int argc, char*argv[]) {
+int handle_ctrl_message(msg_header *hdr, ssize_t len);
 
-    // オプションのパース
+[[noreturn]] int main(int argc, char *argv[]) {
+
+    // Parsing options
     int opt;
     while ((opt = getopt(argc, argv, "lp:c:")) != -1) {
         switch (opt) {
-            case 'l':
-                is_server = 1;
-                break;
-            case 'p':
-                source_port = atoi(optarg);
-                printf("source_port = %d\n", source_port);
-                break;
-            case 'c':
-                ctl_level = atoi(optarg);
-                printf("ctl_level = %d\n", ctl_level);
-                break;
-            default:
-                printf("Error! \'%c\' \'%c\'\n", opt, optopt);
-                return 0;
+        case 'l':
+            is_server = 1;
+            break;
+        case 'p':
+            source_port = atoi(optarg);
+            printf("source_port = %d\n", source_port);
+            break;
+        case 'c':
+            ctl_level = atoi(optarg);
+            printf("ctl_level = %d\n", ctl_level);
+            break;
+        default:
+            printf("error! \'%c\' \'%c\'\n", opt, optopt);
+            terminate(1);
         }
     }
 
     if (argc - optind == 2) { // Specified non-opt arguments for address and port
 
-        // 名前解決
+        // Name resolution
         struct addrinfo hints, *info;
         memset(&hints, 0, sizeof(hints));
         hints.ai_family = AF_INET;
@@ -71,157 +79,136 @@ void terminate(int code){
         getaddrinfo(argv[optind], NULL, &hints, &info);
         struct in_addr resolved;
         resolved.s_addr = ((struct sockaddr_in *)(info->ai_addr))->sin_addr.s_addr;
-        printf("Name resolution %s -> %s\n", argv[optind], inet_ntoa(resolved));
+        printf("name resolution (%s -> %s)\n", argv[optind], inet_ntoa(resolved));
 
-        // TODO for failure
+        // TODO: for failure
 
-        if(is_server){
+        if (is_server) {
             local_address.sin_addr.s_addr = resolved.s_addr;
-            local_address.sin_port = htons(atoi(argv[optind+1]));
-        }else{
+            local_address.sin_port = htons(atoi(argv[optind + 1]));
+        } else {
             remote_address.sin_addr.s_addr = resolved.s_addr;
-            remote_address.sin_port = htons(atoi(argv[optind+1]));
-            printf("Target %s, %d\n", argv[optind], ntohs(remote_address.sin_port));
+            remote_address.sin_port = htons(atoi(argv[optind + 1]));
+            printf("target %s:%d\n", inet_ntoa(resolved), ntohs(remote_address.sin_port));
         }
 
     } else if (argc - optind == 1) { // Specified non-opt arguments only for port
-        if(is_server){
+        if (is_server) {
             local_address.sin_addr.s_addr = INADDR_ANY;
             local_address.sin_port = htons(atoi(argv[optind]));
         } else { // If client mode, exit
-            printf("Please specify address and port\n");
+            printf("please specify address and port\n");
             exit(EXIT_FAILURE);
         }
-    }else{
-        printf("Invalid arguents\n");
+    } else {
+        printf("invalid arguents\n");
         exit(EXIT_FAILURE);
     }
 
-    if(is_server){
-        printf("Runnning in server mode\n");
+    if (is_server) {
+        printf("runnning in server mode\n");
     }
 
-    ssize_t	res;
+    ssize_t res;
 
-    // UDP用ソケットの初期化
-    udp_sock_fd = socket(AF_INET, SOCK_DGRAM, 0); // UDP用ソケットを開く
-    if(udp_sock_fd < 0){
-        perror("Failed to open socket for udp");
+    /** Initialize udp socket **/
+
+    udp_sock_fd = socket(AF_INET, SOCK_DGRAM, 0); // Try to open udp socket
+    if (udp_sock_fd < 0) {
+        perror("failed to open udp socket");
         exit(EXIT_FAILURE);
     }
 
     struct sockaddr_in bind_addr;
     bind_addr.sin_family = AF_INET;
-    if(is_server){ // If server mode
+    if (is_server) { // If server mode
         bind_addr.sin_port = local_address.sin_port;
         bind_addr.sin_addr.s_addr = local_address.sin_addr.s_addr;
-        res = bind(udp_sock_fd, (struct sockaddr *)&bind_addr, sizeof(bind_addr)); // UDP用ソケットをbind
+        res = bind(udp_sock_fd, (struct sockaddr *)&bind_addr, sizeof(bind_addr)); // Try to bind
         if (res < 0) {
-            perror("Failed to bind socket for udp");
+            perror("failed to bind udp socket");
             terminate(EXIT_FAILURE);
         }
-        printf("Bound listen address\n");
-    }else{ // If client mode
+        printf("bound listen address\n");
+    } else { // If client mode
         if (source_port != 0) {
             bind_addr.sin_addr.s_addr = INADDR_ANY;
             bind_addr.sin_port = htons(source_port);
             res = bind(udp_sock_fd, (struct sockaddr *)&bind_addr, sizeof(bind_addr)); // UDP用ソケットをbind
             if (res < 0) {
-                perror("Failed to bind socket for udp");
+                perror("failed to bind udp socket");
                 terminate(EXIT_FAILURE);
             }
-            printf("Bound source address\n");
+            printf("bound source address\n");
         }
-
     }
 
-    printf("Succeed to open socket for udp (fd: %d)\n", udp_sock_fd);
+    printf("succeed to open udp socket (fd: %d)\n", udp_sock_fd);
 
     ssize_t len;
-    struct sockaddr_un unix_addr{};
+    struct sockaddr_un unix_addr {};
 
-    // シグナルハンドラ
+    // Configure signal handler
     signal(SIGINT, terminate);
     signal(SIGTERM, terminate);
 
-    // CTL用ソケットの初期化
-    un_fd = socket(AF_UNIX, SOCK_STREAM, 0); // ctl用socket
-    if(un_fd < 0){
-        perror("Failed to open socket for ctl");
+    /** Initialize control socket **/
+
+    ctrl_sock_fd = socket(AF_UNIX, SOCK_STREAM, 0); // Open control socket
+    if (ctrl_sock_fd < 0) {
+        perror("failed to open ctrl socket");
         exit(EXIT_FAILURE);
     }
 
     unix_addr.sun_family = AF_UNIX;
-    strcpy(unix_addr.sun_path, UNIX_SOCKET_PATH);
-    res = connect(un_fd, (struct sockaddr*)&unix_addr, sizeof(unix_addr));
-    if(res < 0){
-        perror("Failed to connect socket for ctl");
+    strcpy(unix_addr.sun_path, CTRL_SOCKET_PATH);
+    res = connect(ctrl_sock_fd, (struct sockaddr *)&unix_addr, sizeof(unix_addr));
+    if (res < 0) {
+        perror("failed to connect ctrl socket");
         terminate(EXIT_FAILURE);
     }
-    printf("Succeed to connect with unix domain socket (fd: %d)\n", un_fd);
+    printf("succeed to connect to ctrl socket (fd: %d)\n", ctrl_sock_fd);
 
-    // Openパケット
-    uint8_t open_msg_buf[sizeof(udpctl_header) + sizeof(udpctl_open)];
-    udpctl_header *open_msg_hdr;
-    udpctl_open *open_msg_data;
-    open_msg_hdr = reinterpret_cast<udpctl_header*>(open_msg_buf);
-    open_msg_hdr->type = type_open;
-    open_msg_hdr->length = sizeof(udpctl_open);
-    open_msg_data = reinterpret_cast<udpctl_open*>(&open_msg_buf[sizeof(udpctl_header)]);
-    open_msg_data->version = UDPCTL_VERSION;
-    memcpy(open_msg_data->magic, UDPCTL_MAGIC, 16);
+    // Sending open message to ctrl socket
+    msg_open *open_msg_buf;
+    open_msg_buf = (msg_open *)malloc(sizeof(msg_open));
 
-    res = send(un_fd, open_msg_buf, sizeof(udpctl_header) + sizeof(udpctl_open), 0);
+    open_msg_buf->hdr.length = sizeof(msg_open);
+    open_msg_buf->hdr.type = TYPE_OPEN;
 
-    if(res < 0){
-        perror("Failed to send open packet");
-        terminate(res);
-    }
+    res = send(ctrl_sock_fd, open_msg_buf, sizeof(msg_open), 0);
 
-    // 登録パケット
-    uint8_t register_msg_buf[sizeof(udpctl_header) + sizeof(udpctl_register)];
-    udpctl_header *register_msg_hdr;
-    udpctl_register *register_msg_data;
-    register_msg_hdr = reinterpret_cast<udpctl_header*>(register_msg_buf);
-    register_msg_hdr->type = type_register;
-    register_msg_hdr->length = sizeof(udpctl_register);
-    register_msg_data = reinterpret_cast<udpctl_register*>(&register_msg_buf[sizeof(udpctl_header)]);
-    register_msg_data->local_address = UDP_SOCKET_ADDREESS;
-    register_msg_data->local_port = UDP_SOCKET_PORT;
-
-    res = send(un_fd, register_msg_buf, sizeof(udpctl_header) + sizeof(udpctl_register), 0);
-
-    if(res < 0){
-        perror("Failed to send open packet");
-        terminate(res);
-    }
-
-    printf("Succeeded to connect agent!\n");
-
-    // 登録パケット
-    uint8_t request_msg_buf[sizeof(udpctl_header) + sizeof(udpctl_request)];
-    udpctl_header *request_msg_hdr;
-    udpctl_request *request_msg_data;
-    request_msg_hdr = reinterpret_cast<udpctl_header *>(request_msg_buf);
-    request_msg_hdr->type = type_request;
-    request_msg_hdr->length = sizeof(udpctl_request);
-    request_msg_data = reinterpret_cast<udpctl_request *>(&request_msg_buf[sizeof(udpctl_header)]);
-    request_msg_data->level = htons(ctl_level);
-
-    res = send(un_fd, request_msg_data,
-               sizeof(udpctl_header) + sizeof(udpctl_request), 0);
+    free(open_msg_buf);
 
     if (res < 0) {
-        perror("Failed to send request packet");
+        perror("failed to send open message");
         terminate(res);
     }
 
-    printf("Sent request %d!\n",ctl_level);
+    // Sending check message to ctrl socket
+    msg_ctrl_test_con *chk_msg_buf;
+    chk_msg_buf = (msg_ctrl_test_con *)malloc(sizeof(msg_ctrl_test_con));
+
+    chk_msg_buf->hdr.length = sizeof(msg_ctrl_test_con);
+    chk_msg_buf->hdr.type = TYPE_CTRL_TEST_CONNECTION;
+    chk_msg_buf->test_num = htonl(0x984321);
+
+    res = send(ctrl_sock_fd, chk_msg_buf, sizeof(msg_ctrl_test_con), 0);
+
+    free(chk_msg_buf);
+
+    if (res < 0) {
+        perror("failed to send check message");
+        terminate(res);
+    }
+
+    printf("testing to connect agent\n");
 
     fd_set sets, sets2;
     FD_ZERO(&sets);
     FD_ZERO(&sets2);
     FD_SET(udp_sock_fd, &sets);
+    FD_SET(ctrl_sock_fd, &sets);
     FD_SET(STDIN_FILENO, &sets);
 
     uint8_t inputs[INPUT_BUFFER_LEN];
@@ -229,41 +216,7 @@ void terminate(int code){
 
     uint8_t recv_buffer[RECV_BUFFER_LEN];
 
-    while(true){
-
-        uint8_t keepalive_msg_buf[sizeof(udpctl_header)];
-        udpctl_header *keepalive_header;
-        keepalive_header = reinterpret_cast<udpctl_header *>(keepalive_msg_buf);
-        keepalive_header->type = type_request;
-        keepalive_header->length = 0;
-
-        res = send(un_fd, keepalive_msg_buf, sizeof(udpctl_header), 0);
-        if (res < 0) {
-            perror("Failed to send");
-            terminate(res);
-        }
-        printf("Sending keepalive\n");
-
-        // 登録パケット
-        uint8_t request_msg_buf[sizeof(udpctl_header) + sizeof(udpctl_request)];
-        udpctl_header *request_msg_hdr;
-        udpctl_request *request_msg_data;
-        request_msg_hdr = reinterpret_cast<udpctl_header *>(request_msg_buf);
-        request_msg_hdr->type = type_request;
-        request_msg_hdr->length = sizeof(udpctl_request);
-        request_msg_data = reinterpret_cast<udpctl_request *>(
-            &request_msg_buf[sizeof(udpctl_header)]);
-        request_msg_data->level = htons(ctl_level);
-
-        res = send(un_fd, request_msg_data,
-                   sizeof(udpctl_header) + sizeof(udpctl_request), 0);
-
-        if (res < 0) {
-            perror("Failed to send request packet");
-            terminate(res);
-        }
-
-        printf("Sent request %d!\n", ctl_level);
+    while (true) {
 
         struct timeval tv;
         tv.tv_sec = 1;
@@ -271,74 +224,116 @@ void terminate(int code){
 
         memcpy(&sets2, &sets, sizeof(sets));
         // printf("Selecting...\n");
-        res = select(std::max(STDIN_FILENO, udp_sock_fd) + 1, &sets2, nullptr, nullptr, &tv);
+        res = select(std::max(STDIN_FILENO, std::max(ctrl_sock_fd, udp_sock_fd)) + 1, &sets2, nullptr, nullptr, &tv);
 
-        if (FD_ISSET(udp_sock_fd, &sets2)) {
+        if (FD_ISSET(udp_sock_fd, &sets2)) { // Received something from udp socket
             struct sockaddr_in recv_addr;
             socklen_t recv_addr_len = sizeof(recv_addr);
-            int recv_res = recvfrom(udp_sock_fd, &recv_buffer, RECV_BUFFER_LEN, 0, (struct sockaddr *)&recv_addr, &recv_addr_len); 
-            if(recv_res < 0){
-                perror("Failed to recv");
-            }else{
-                if(is_server && remote_address.sin_addr.s_addr == 0){
-                    printf("Connection! %d\n", recv_res);
+            int recv_res = recvfrom(udp_sock_fd, &recv_buffer, RECV_BUFFER_LEN, 0, (struct sockaddr *)&recv_addr, &recv_addr_len);
+            if (recv_res < 0) {
+                perror("failed to recv");
+            } else {
+                if (is_server && remote_address.sin_addr.s_addr == 0) {
+                    printf("connection! %d\n", recv_res);
                     remote_address.sin_addr.s_addr = recv_addr.sin_addr.s_addr;
                     remote_address.sin_port = recv_addr.sin_port;
                 }
-                for(int i=0;i<recv_res;i++){
+                for (int i = 0; i < recv_res; i++) {
                     printf("%c", recv_buffer[i]);
                 }
             }
         }
 
-        if(FD_ISSET(STDIN_FILENO, &sets2)){
+        msg_header *hdr_ptr;
+
+        if (FD_ISSET(ctrl_sock_fd, &sets2)) { // Received something from control socket
+            printf("received message from ctrl socket\n");
+            if (ctrl_sock_rcvd_size < sizeof(msg_header)) {                                                                    // まだヘッダも受信できてない場合
+                len = recv(ctrl_sock_fd, &ctrl_sock_buffer[ctrl_sock_rcvd_size], sizeof(msg_header) - ctrl_sock_rcvd_size, 0); // ひとまずヘッダを受信する
+            } else {                                                                                                           // ヘッダは受信できているとき
+                hdr_ptr = (msg_header *)&ctrl_sock_buffer;
+                len = recv(ctrl_sock_fd, &ctrl_sock_buffer[ctrl_sock_rcvd_size], hdr_ptr->length - ctrl_sock_rcvd_size, 0);
+            }
+
+            if (len < 0) { // Failure
+                perror("failed to recv");
+                terminate(1);
+            } else if (len == 0) { // Close connection
+                printf("closed control socket by agent\n");
+                terminate(1);
+            } else { // 正常に受信できたら
+                ctrl_sock_rcvd_size += len;
+                // printf("size: %d\n", ctrl_sock_rcvd_size);
+                if (ctrl_sock_rcvd_size >= sizeof(msg_header)) { // ヘッダを受信できている場合
+                    hdr_ptr = (msg_header *)&ctrl_sock_buffer;
+                    if (hdr_ptr->length == ctrl_sock_rcvd_size) { // ヘッダに書かれているメッセージサイズと受信済みのサイズが等しいとき
+                        handle_ctrl_message(hdr_ptr, len);        // メッセージの処理に送る
+
+                        ctrl_sock_rcvd_size = 0;
+                    } else if (hdr_ptr->length > ctrl_sock_rcvd_size) { // まだ足りないとき
+                                                                        // 次のループでチャレンジ
+                    } else {                                            // 大きすぎるとき(バグ以外では発生しない)
+                        fprintf(stderr, "received message is too large\n");
+                        terminate(1);
+                    }
+                }
+            }
+        }
+
+        if (FD_ISSET(STDIN_FILENO, &sets2)) { // Received something from stdin
             int input = getchar();
 
-            if (input_len < (INPUT_BUFFER_LEN - 1)) inputs[input_len++] = input;
+            if (input_len < (INPUT_BUFFER_LEN - 1))
+                inputs[input_len++] = input;
             if (input == '\n') {
-                if(is_server && remote_address.sin_addr.s_addr == 0){
-                    printf("Connection is not ready\n");
-                }else{
+                if (is_server && remote_address.sin_addr.s_addr == 0) {
+                    printf("connection is not ready\n");
+                } else {
                     struct sockaddr_in send_addr;
                     send_addr.sin_family = AF_INET;
                     send_addr.sin_port = remote_address.sin_port;
                     send_addr.sin_addr.s_addr = remote_address.sin_addr.s_addr;
 
-                    int send_res = sendto(udp_sock_fd, inputs, input_len, 0,
-                                          (struct sockaddr *)&send_addr,
+                    int send_res = sendto(udp_sock_fd, inputs, input_len, 0, (struct sockaddr *)&send_addr,
                                           sizeof(send_addr)); // 入力を送信!
                     if (send_res < 0) {
-                        perror("Failed to send");
+                        perror("failed to send");
                     } else {
                         input_len = 0;
                     }
                 }
             }
         }
-       
-        /*
-        struct sockaddr_in server_addr, my_addr;
-        socklen_t llen = sizeof(my_addr);
-        getsockname(udp_sock_fd, (struct sockaddr *)&my_addr, &llen);
-        printf("Port %d\n", ntohs(my_addr.sin_port));
-        */
     }
 
-    while(true){
-        uint8_t keepalive_msg_buf[sizeof(udpctl_header)];
-        udpctl_header *keepalive_header;
-        keepalive_header = reinterpret_cast<udpctl_header*>(keepalive_msg_buf);
-        keepalive_header->type = type_keepalive;
-        keepalive_header->length = 0;
-
-        res = send(un_fd, keepalive_msg_buf, sizeof(udpctl_header), 0);
-        if(res < 0){
-            perror("Failed to send");
-            terminate(res);
-        }
-        printf("Sending keepalive\n");
-
-        sleep(10);
-    }
     // no return
+}
+
+int send_ctrl_set_opt_exp() {
+    msg_ctrl_set_opt_exp *msg_ptr = (msg_ctrl_set_opt_exp *)malloc(sizeof(msg_ctrl_set_opt_exp));
+
+    msg_ptr->hdr.length = sizeof(msg_ctrl_set_opt_exp);
+    msg_ptr->hdr.type = TYPE_CTRL_SET_OPTION_EXPERIMENTAL;
+    msg_ptr->set_type = SET_TYPE_COUNT(30000);
+    msg_ptr->value = 10000;
+    msg_ptr->flow.prefix = 200;
+    msg_ptr->flow.netmask = 100;
+    msg_ptr->flow.src_port = 0;
+    msg_ptr->flow.dst_port = 0;
+
+    send(ctrl_sock_fd, msg_ptr, sizeof(msg_ctrl_set_opt_exp), 0);
+
+    free(msg_ptr);
+
+    return 0;
+}
+
+int handle_ctrl_message(msg_header *hdr, ssize_t len) {
+    switch (hdr->type) {
+    case TYPE_NOTIFY_TEST_CONNECTION_REPLY:
+        send_ctrl_set_opt_exp();
+        printf("success to connect agent test\n");
+        break;
+    }
+    return 0;
 }

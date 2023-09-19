@@ -4,16 +4,18 @@ OBJECTS = $(SOURCES:.cpp=.o)
 
 CXX = clang
 
+NC_PORT = 10101
+
 .PHONY: all
 all: $(TARGET)
 
 .PHONY: run-client
 run-client: $(TARGET)
-	./cmd localhost 10101
+	./cmd localhost $(NC_PORT)
 
 .PHONY: run-server
 run-server: $(TARGET)
-	./cmd -l 10101
+	./cmd -l $(NC_PORT)
 
 .PHONY: clean
 clean:

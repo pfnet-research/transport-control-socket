@@ -1,7 +1,7 @@
 TARGET = bpf.o
 SOURCE = bpf.c
 
-DEVICE ?= ens224
+DEVICE ?= test0
 
 CFLAGS = -target bpf -O3 -g
 
@@ -31,6 +31,11 @@ tc-status:
 	tc qdisc show dev $(DEVICE) clsact
 	tc filter show dev $(DEVICE) ingress
 	tc filter show dev $(DEVICE) egress
+
+.PHONY: map-status
+map-status:
+	sudo bpftool map dump name map_intent
+	sudo bpftool map dump name map_set_opt_exp
 
 .PHONY: trace
 trace:
