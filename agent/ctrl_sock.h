@@ -101,7 +101,6 @@ struct msg_ctrl_test_con {
 
 struct msg_ctrl_set_opt_time {
     msg_header hdr;
-    set_type_t set_type;
     flow_info_t flow;
 } __attribute__((packed));
 

@@ -29,6 +29,11 @@ struct map_rcvd_opt_exp_value {
     address_info_t addr;
 } __attribute__((packed));
 
+struct map_tsval_flow_key {
+    uint32_t address;
+    uint16_t port;
+} __attribute__((packed));
+
 /** Structures for UDP Options **/
 
 struct udp_option_head{

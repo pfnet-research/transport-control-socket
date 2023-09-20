@@ -36,6 +36,7 @@ tc-status:
 map-status:
 	sudo bpftool map dump name set_intent
 	sudo bpftool map dump name set_opt_exp
+	sudo bpftool map dump name tsval_flow
 
 .PHONY: trace
 trace:

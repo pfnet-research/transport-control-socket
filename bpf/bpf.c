@@ -36,10 +36,6 @@
 #endif
 
 /*
-#define PIN_NONE 0
-#define PIN_OBJECT_NS 1
-#define PIN_GLOBAL_NS 2
-#define PIN_CUSTOM_NS 3
 
 struct bpf_elf_map {
     __u32 type;
@@ -60,6 +56,11 @@ struct bpf_elf_map SEC("maps") map_set_intent = {
 };
 */
 
+#define PIN_NONE 0
+#define PIN_OBJECT_NS 1
+#define PIN_GLOBAL_NS 2
+#define PIN_CUSTOM_NS 3
+
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 0xffff);
@@ -78,6 +79,19 @@ struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 256 * 1024);
 } rcvd_opt_exp SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 0xffff);
+    __type(key, struct map_tsval_flow_key);
+    __type(value, uint32_t);
+    __uint(pinning, PIN_OBJECT_NS);
+} tsval_flow SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 256 * 1024);
+} rcvd_opt_time SEC(".maps");
 
 /**
  * Ingressの処理ではSurplusエリアの、Optionを外す
@@ -108,7 +122,7 @@ int tc_handle_ingress(struct __sk_buff *skb) {
         return TC_ACT_OK; // UDPでなかったら終了
 
     struct udphdr *udp = data + nh_off + iph_off;
-    if ((void *)&udp[1] > data_end) 
+    if ((void *)&udp[1] > data_end)
         return TC_ACT_OK; // 長さがUDPパケット以下なら終了
 
     printk2("[I] Received skb_len=%d, ip_len=%d, udp_len=%d", skb->len, ntohs(ip->tot_len), ntohs(udp->len));
@@ -125,14 +139,18 @@ int tc_handle_ingress(struct __sk_buff *skb) {
     uint8_t ip_tail_offset = ETH_HLEN + iph_off + ntohs(udp->len);
     uint8_t aligned_ip_tail_offset = ((ip_tail_offset + 1) & ~((uint32_t)1));
     int count = 0;
-    //bpf_ringbuf_reserve(&map_rcvd_opt_exp, sizeof(uint16_t), 0);
+    // bpf_ringbuf_reserve(&map_rcvd_opt_exp, sizeof(uint16_t), 0);
     while (count++ < 10) {
         struct udp_option_head *opthd = data + aligned_ip_tail_offset;
         if (&opthd[1] > data_end) {
             break;
         }
-        printk2("Len: %d", opthd->length);
-        printk2("Type: %d", opthd->type);
+
+        if (opthd->length == 0) {
+            break;
+        }
+
+        printk2("[I] Opt len: %d, type: %d", opthd->length, opthd->type);
 
         if (opthd->type == UDP_OPTION_EXP) {
             struct udp_option_exp *expsp = data + aligned_ip_tail_offset;
@@ -140,17 +158,48 @@ int tc_handle_ingress(struct __sk_buff *skb) {
                 break;
             }
 
-            printk("Exp opt received!");
+            printk("[I] Exp opt received!");
 
             struct map_rcvd_opt_exp_value notify_value;
             notify_value.value = expsp->exp_val;
             notify_value.addr.address = htonl(ip->saddr);
             notify_value.addr.port = htons(udp->source);
             bpf_ringbuf_output(&rcvd_opt_exp, &notify_value, sizeof(struct map_rcvd_opt_exp_value), 0);
+        } else if (opthd->type == UDP_OPTION_TIME) {
+
+            struct udp_option_time *timesp = data + aligned_ip_tail_offset;
+            if (&timesp[1] > data_end) {
+                break;
+            }
+
+            printk("[I] Timestamp opt received!");
+
+            struct map_tsval_flow_key key;
+            key.address = ip->saddr;
+            key.port = udp->source;
+
+            printk2("[I] Timestamp key %d:%d, val %d", key.address, key.port, timesp->tsval);
+
+            long res = bpf_map_update_elem(&tsval_flow, &key, &timesp->tsval, BPF_ANY); // 次にTSecrに入れるためにTSvalを保存
+
+            if(res != 0){
+                printk("Failed to update tsval map");
+            }
+
+            uint32_t kerlen_ns = bpf_ktime_get_ns() & 0xffffffffu; // TODO: カーネルのuptimeをそのまま送らないようにOffsetを入れる
+            uint32_t rtt_ns = kerlen_ns - timesp->tsecr;
+
+            printk2("[I] Kernel ns   %u ns", kerlen_ns);
+            printk2("[I] Rcvd tsecr  %u ns", timesp->tsecr);
+            printk2("[I] Ingress rtt %u ns", rtt_ns);
+
+            bpf_ringbuf_output(&rcvd_opt_time, &rtt_ns, sizeof(uint32_t), 0);
         }
 
         aligned_ip_tail_offset += opthd->length;
     }
+
+    // TODO: Optionsを消してからカーネルに渡す?
 
     return TC_ACT_OK;
 }
@@ -219,6 +268,9 @@ int tc_handle_egress(struct __sk_buff *skb) {
 
     uint16_t udp_src = htons(udp->source);
 
+    uint32_t ip_dest_nw = ip->daddr;
+    uint16_t udp_dest_nw = udp->dest;
+
     /** Check set intent **/
 
     struct map_set_intent_key intent_key = {.local_address = htonl(udp_src), .local_port = htons(udp->dest)};
@@ -248,7 +300,12 @@ int tc_handle_egress(struct __sk_buff *skb) {
         printk("[E] No opt exp found!");
     }
 
-    if (!has_intent && !has_set_exp_opt) { // オプションをつけない場合、終了
+    /** Check set time option **/
+
+    int has_set_time_opt = 1;
+    // TODO: Check
+
+    if (!has_intent && !has_set_exp_opt && !has_set_time_opt) { // オプションをつけない場合、終了
         return TC_ACT_OK;
     }
 
@@ -263,11 +320,15 @@ int tc_handle_egress(struct __sk_buff *skb) {
         opts_len += sizeof(struct udp_option_exp);
     }
 
+    if (has_set_time_opt == 1) {
+        opts_len += sizeof(struct udp_option_time);
+    }
+
     printk2("[E] Old skb len %d", skb->len);
 
     uint16_t old_ip_len = ntohs(ip->tot_len);
     uint16_t aligned_ip_len = ((old_ip_len + 1) & ~((uint32_t)1)); // 2バイトアライメント
-    uint16_t extended_ip_len = aligned_ip_len + opts_len; // オプション長を追加
+    uint16_t extended_ip_len = aligned_ip_len + opts_len;          // オプション長を追加
 
     long res = bpf_skb_change_tail(skb, skb->len + (extended_ip_len - old_ip_len), 0); // skbの拡張
 
@@ -288,8 +349,7 @@ int tc_handle_egress(struct __sk_buff *skb) {
     if ((void *)&ip[1] > data_end)
         return TC_ACT_OK; // 長さがIPパケット以下なら終了
 
-    printk2("[E] IP old len = %d", old_ip_len);
-    printk2("[E] IP new len = %d", extended_ip_len);
+    printk2("[E] IP old len = %d, new len = %d", old_ip_len, extended_ip_len);
 
     uint16_t extended_ip_len_nw = htons(extended_ip_len);
     bpf_l3_csum_replace(skb, IP_CHECK_OFF, htons(old_ip_len), extended_ip_len_nw, 2); // IPチェックサムの再計算
@@ -316,6 +376,39 @@ int tc_handle_egress(struct __sk_buff *skb) {
         printk("[E] Written option exp");
     }
 
+    if (has_set_time_opt) {
+
+        struct map_tsval_flow_key key;
+        memset(&key, 0, sizeof(key));
+
+            key.address = ip_dest_nw;
+        key.port = udp_dest_nw;
+
+        printk2("[E] Timestamp key %d:%d", key.address, key.port);
+
+        uint32_t tsecr = 0;
+        uint32_t *tsecr_ptr = bpf_map_lookup_elem(&tsval_flow, &key);
+
+        if (tsecr_ptr == NULL) {
+            printk("[E] Timestamp not found");
+        }else{
+            tsecr = *tsecr_ptr;
+            printk2("[E] %d", tsecr);
+        }
+
+        uint32_t kerlen_ns = bpf_ktime_get_ns() & 0xffffffffu; // TODO: カーネルのuptimeをそのまま送らないようにOffsetを入れる
+
+        struct udp_option_time time_opt;
+        time_opt.type_len.type = UDP_OPTION_TIME;
+        time_opt.type_len.length = sizeof(struct udp_option_time);
+        time_opt.tsval = kerlen_ns;
+        time_opt.tsecr = tsecr;
+        bpf_skb_store_bytes(skb, current_offset, &time_opt, sizeof(struct udp_option_time), 0); // surplusエリアに書き込み
+
+        current_offset += sizeof(struct udp_option_time);
+
+        printk2("[E] Written option timestamp tsval=%d, tsecr=%d", kerlen_ns, tsecr);
+    }
 
     return TC_ACT_OK;
 }

@@ -26,6 +26,9 @@ int map_set_opt_exp_fd;
 int map_rcvd_opt_exp_fd;
 ring_buffer *rb_rcvd_opt_exp;
 int rb_rcvd_opt_exp_fd;
+int map_rcvd_opt_time_fd;
+ring_buffer *rb_rcvd_opt_time;
+int rb_rcvd_opt_time_fd;
 
 enum connection_state { closed, sock_open, ctrl_open };
 
@@ -99,6 +102,10 @@ int handle_ctrl_message(ctrl_socket_state *state, msg_header *hdr, ssize_t len) 
         printf("subscribe opt exp (fd: %d)\n", state->fd);
 
     } break;
+    case TYPE_CTRL_SET_OPTION_TIMESTAMP: {
+        printf("set opt time (fd: %d)\n", state->fd);
+
+    } break;
     default:
         printf("unimplemented!\n");
         break;
@@ -151,8 +158,9 @@ int handle_ctrl_message(ctrl_socket_state *state, msg_header *hdr, ssize_t len) 
     FD_SET(fd_accept, &sets);
     FD_SET(STDIN_FILENO, &sets);
     FD_SET(rb_rcvd_opt_exp_fd, &sets);
+    FD_SET(rb_rcvd_opt_time_fd, &sets);
 
-    max_fd = std::max(fd_accept, rb_rcvd_opt_exp_fd);
+    max_fd = std::max(fd_accept, std::max(rb_rcvd_opt_exp_fd, rb_rcvd_opt_time_fd));
 
     for (int i = 0; i < MAX_CONNECTION; i++) { // Initialize state table
         states[i].fd = -1;
@@ -216,7 +224,10 @@ int handle_ctrl_message(ctrl_socket_state *state, msg_header *hdr, ssize_t len) 
 
         if (FD_ISSET(rb_rcvd_opt_exp_fd, &sets2)) {
             ring_buffer__poll(rb_rcvd_opt_exp, 0);
-            printf("ctrl message\n");
+        }
+
+        if (FD_ISSET(rb_rcvd_opt_time_fd, &sets2)) {
+            ring_buffer__poll(rb_rcvd_opt_time, 0);
         }
 
         for (int i = 0; i < MAX_CONNECTION; i++) {
@@ -232,7 +243,7 @@ int handle_ctrl_message(ctrl_socket_state *state, msg_header *hdr, ssize_t len) 
                 }
 
                 len = recv(states[i].fd, &states[i].received_buffer[states[i].received_size], recv_size, 0);
-
+                //printf("len: %d\n", len);
                 if (len < 0) { // Failure
                     perror("failed to recv");
                     // TODO: Error
@@ -245,9 +256,14 @@ int handle_ctrl_message(ctrl_socket_state *state, msg_header *hdr, ssize_t len) 
                     states[i].received_size = 0;
                 } else { // 正常に受信できたら
                     states[i].received_size += len;
-                    // printf("size: %d\n", states[i].received_size);
+                    //printf("size: %d\n", states[i].received_size);
                     if (states[i].received_size >= sizeof(msg_header)) { // ヘッダを受信できている場合
                         hdr_ptr = (msg_header *)&states[i].received_buffer;
+
+                        if(hdr_ptr->length <= sizeof(msg_header)){
+                            fprintf(stderr, "invalid header message size %d\n", hdr_ptr->length);
+                        }
+
                         if (hdr_ptr->length == states[i].received_size) {             // ヘッダに書かれているメッセージサイズと受信済みのサイズが等しいとき
                             if (handle_ctrl_message(&states[i], hdr_ptr, len) != 0) { // メッセージの処理に送る
                                 printf("connection reset (%d)\n", states[i].fd);
@@ -297,6 +313,21 @@ int handle_rcvd_opt_exp(void *ctx, void *data, size_t data_sz) {
     return 0;
 }
 
+int handle_rcvd_opt_time(void *ctx, void *data, size_t data_sz) {
+    printf("handle_rcvd_opt_time!!\n");
+
+    if (data_sz < sizeof(uint32_t)) {
+        fprintf(stderr, "error in handle_rcvd_opt_exp\n");
+        terminate(EXIT_FAILURE);
+    }
+
+    uint32_t val = *((uint32_t *) data);
+
+    printf("received time opt %d\n", val);
+
+    return 0;
+}
+
 int main() {
 
     uint32_t next_id = 0, map_fd = 0;
@@ -335,6 +366,8 @@ int main() {
             map_set_opt_exp_fd = map_fd;
         } else if (strcmp(map_info.name, "rcvd_opt_exp") == 0) {
             map_rcvd_opt_exp_fd = map_fd;
+        } else if (strcmp(map_info.name, "rcvd_opt_time") == 0) {
+            map_rcvd_opt_time_fd = map_fd;
         }
     }
 
@@ -361,6 +394,13 @@ int main() {
         printf("map rcvd_opt_exp found! (fd: %d)\n", map_rcvd_opt_exp_fd);
     }
 
+    if (map_rcvd_opt_time_fd == 0) {
+        fprintf(stderr, "map rcvd_opt_time not found\n");
+        found_all_maps = false;
+    } else {
+        printf("map rcvd_opt_time found! (fd: %d)\n", map_rcvd_opt_time_fd);
+    }
+
     // 1つでも目的のBPF mapがら見つからなかったら終了
     if (!found_all_maps) {
         exit(EXIT_FAILURE);
@@ -369,6 +409,9 @@ int main() {
     // Ring buffer
     rb_rcvd_opt_exp = ring_buffer__new(map_rcvd_opt_exp_fd, handle_rcvd_opt_exp, NULL, NULL);
     rb_rcvd_opt_exp_fd = ring_buffer__epoll_fd(rb_rcvd_opt_exp);
+
+    rb_rcvd_opt_time = ring_buffer__new(map_rcvd_opt_time_fd, handle_rcvd_opt_time, NULL, NULL);
+    rb_rcvd_opt_time_fd = ring_buffer__epoll_fd(rb_rcvd_opt_time);
 
     // Ctrl+Cのハンドラ
     struct sigaction sig_int_handler;

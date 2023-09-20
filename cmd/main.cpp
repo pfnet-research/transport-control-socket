@@ -266,7 +266,7 @@ int handle_ctrl_message(msg_header *hdr, ssize_t len);
                 terminate(EXIT_FAILURE);
             } else { // 正常に受信できたら
                 ctrl_sock_rcvd_size += len;
-                // printf("size: %d\n", ctrl_sock_rcvd_size);
+                //printf("size: %d\n", ctrl_sock_rcvd_size);
                 if (ctrl_sock_rcvd_size >= sizeof(msg_header)) { // ヘッダを受信できている場合
                     hdr_ptr = (msg_header *)&ctrl_sock_buffer;
                     if (hdr_ptr->length == ctrl_sock_rcvd_size) { // ヘッダに書かれているメッセージサイズと受信済みのサイズが等しいとき
@@ -354,11 +354,31 @@ int send_ctrl_sbsc_opt_exp(int sock_fd) {
     return 0;
 }
 
+int send_ctrl_set_opt_time() {
+
+    msg_ctrl_set_opt_time *msg_ptr = (msg_ctrl_set_opt_time *)malloc(sizeof(msg_ctrl_set_opt_time));
+
+    msg_ptr->hdr.length = sizeof(msg_ctrl_set_opt_time);
+    msg_ptr->hdr.type = TYPE_CTRL_SET_OPTION_TIMESTAMP;
+    msg_ptr->flow.prefix = 1;
+    msg_ptr->flow.netmask = 1;
+    msg_ptr->flow.src_port = 1;
+    msg_ptr->flow.dst_port = 1;
+
+   send(ctrl_sock_fd, msg_ptr, sizeof(msg_ctrl_set_opt_time), 0);
+
+    free(msg_ptr);
+
+    return 0;
+}
+
 int handle_ctrl_message(msg_header *hdr, ssize_t len) {
+    //printf("new %d\n", hdr->type);
     switch (hdr->type) {
     case TYPE_NOTIFY_TEST_CONNECTION_REPLY:
         send_ctrl_set_opt_exp();
         send_ctrl_sbsc_opt_exp(udp_sock_fd);
+        send_ctrl_set_opt_time();
         printf("success to connect agent test\n");
         break;
     case TYPE_NOTIFY_PER_PACKET_OPTION_EXP: {
