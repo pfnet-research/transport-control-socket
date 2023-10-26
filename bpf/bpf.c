@@ -186,7 +186,7 @@ int tc_handle_ingress(struct __sk_buff *skb) {
                 printk("Failed to update tsval map");
             }
 
-            uint32_t kerlen_ns = bpf_ktime_get_ns() & 0xffffffffu; // TODO: カーネルのuptimeをそのまま送らないようにOffsetを入れる
+            uint32_t kerlen_ns = (bpf_ktime_get_ns()/1000) & 0xffffffffu; // TODO: カーネルのuptimeをそのまま送らないようにOffsetを入れる
             uint32_t rtt_ns = kerlen_ns - timesp->tsecr;
 
             printk2("[I] Kernel ns   %u ns", kerlen_ns);
@@ -381,7 +381,7 @@ int tc_handle_egress(struct __sk_buff *skb) {
         struct map_tsval_flow_key key;
         memset(&key, 0, sizeof(key));
 
-            key.address = ip_dest_nw;
+        key.address = ip_dest_nw;
         key.port = udp_dest_nw;
 
         printk2("[E] Timestamp key %d:%d", key.address, key.port);
@@ -396,7 +396,7 @@ int tc_handle_egress(struct __sk_buff *skb) {
             printk2("[E] %d", tsecr);
         }
 
-        uint32_t kerlen_ns = bpf_ktime_get_ns() & 0xffffffffu; // TODO: カーネルのuptimeをそのまま送らないようにOffsetを入れる
+        uint32_t kerlen_ns = (bpf_ktime_get_ns()/1000) & 0xffffffffu; // TODO: カーネルのuptimeをそのまま送らないようにOffsetを入れる
 
         struct udp_option_time time_opt;
         time_opt.type_len.type = UDP_OPTION_TIME;

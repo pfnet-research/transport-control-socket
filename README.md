@@ -1,5 +1,5 @@
-# i22_daiya
-Network Kernel API with the Control Socket for Extending Transport Protocols
+# Network Kernel API with the Control Socket for Extending Transport Protocols
+https://doi.org/10.1145/3630202.3630229
 
 ## Dependencies
 - make
@@ -23,9 +23,9 @@ make -C cmd
 ```
 
 ## Problems
-#### UDPオプションをつけたUDPパケットのchecksumが誤って計算される
+#### Incorrectly calculated checksum for UDP packets with UDP options
 
-オフロードを無効化する
+Disable offloading
 ```bash
 sudo ethtool --offload IFNAME rx off tx off
 ```
